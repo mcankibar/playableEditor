@@ -12,7 +12,8 @@ export function ReleasesDialog({ gameId, releases, variant, variants, onChanged,
   }, [onClose]);
 
   const remove = async (r) => {
-    if (!window.confirm(`Delete release r${r.number}? Its past exports can't be downloaded again.`)) return;
+    if (!window.confirm(`Delete release r${r.number}? Releases referenced by variants or exports are protected.`))
+      return;
     try {
       await api.deleteRelease(r.id);
       await onChanged();
@@ -39,7 +40,8 @@ export function ReleasesDialog({ gameId, releases, variant, variants, onChanged,
           onError={onError}
         />
         <p className="muted small">
-          Variants follow the latest release. Pin one to keep “{variant.name}” on a release while you test a new one.
+          Variants keep their saved release. Pin an approved build to keep “{variant.name}” on a release while you test
+          a new one.
         </p>
         <table className="table">
           <tbody>

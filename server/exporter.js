@@ -25,13 +25,14 @@ export function exportBatch({ prepared, manifest, release, variant, uploads, net
 
   // Everything is validated and packaged before anything is returned.
   const outputs = [];
+  let outputBytes = 0;
   for (const network of networks) {
     for (const lang of langs) {
       const packed = packageVariant(prepared, {
         overrides: variant.overrides,
         uploads,
         network,
-        language: lang
+        language: lang === "auto" && !manifest.fields.some((f) => f.type === "language") ? null : lang
       });
       const base = [slug(manifest.game.id), slug(variant.name), slug(network), slug(lang)].join("_");
       // Keep a network-mandated entry file name (Mintegral) inside a folder of its own.
@@ -39,6 +40,9 @@ export function exportBatch({ prepared, manifest, release, variant, uploads, net
         packed.extension === "html" && packed.entryName !== "index.html"
           ? `${base}/${packed.entryName}`
           : `${base}.${packed.extension}`;
+      outputBytes += packed.data.length;
+      if (outputBytes > 96 * 1024 * 1024)
+        throw new Error("Variant output exceeds 96 MiB; choose fewer networks/languages");
       outputs.push({ name, packed });
     }
   }

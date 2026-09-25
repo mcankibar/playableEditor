@@ -8,6 +8,10 @@ export function openStore(dataDir) {
   const releasesDir = path.join(dataDir, "releases");
   const assetsDir = path.join(dataDir, "assets");
   const tmpDir = path.join(dataDir, "tmp");
+  const exportsDir = path.join(dataDir, "exports");
+  const jobsDir = path.join(dataDir, "jobs");
+  fs.mkdirSync(exportsDir, { recursive: true });
+  fs.mkdirSync(jobsDir, { recursive: true });
   // Also creates dataDir itself, where the database lives.
   fs.mkdirSync(releasesDir, { recursive: true });
   fs.mkdirSync(assetsDir, { recursive: true });
@@ -23,7 +27,20 @@ export function openStore(dataDir) {
     releasesDir,
     assetsDir,
     tmpDir,
+    exportsDir,
+    jobsDir,
     releaseFile,
+    exportFile(hash) {
+      if (!/^[a-f0-9]{64}$/.test(hash)) throw new Error("Invalid export hash");
+      return path.join(exportsDir, hash);
+    },
+    writeExport(hash, data) {
+      const file = this.exportFile(hash);
+      if (!fs.existsSync(file)) {
+        fs.writeFileSync(file + ".part", data);
+        fs.renameSync(file + ".part", file);
+      }
+    },
 
     writeRelease(id, html) {
       fs.writeFileSync(releaseFile(id), html);

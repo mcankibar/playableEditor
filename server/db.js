@@ -2,6 +2,14 @@
 import { DatabaseSync } from "node:sqlite";
 
 const SCHEMA = `
+CREATE TABLE IF NOT EXISTS recipes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, game_id TEXT NOT NULL,
+  definition TEXT NOT NULL, created_by TEXT, created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS recipe_runs (
+  id TEXT PRIMARY KEY, game_id TEXT NOT NULL, fingerprint TEXT NOT NULL,
+  provenance TEXT NOT NULL, variant_ids TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS games (
   id          TEXT PRIMARY KEY,
   title       TEXT NOT NULL,
@@ -109,7 +117,10 @@ const MIGRATIONS = [
   // The release the variant was last edited or checked with, and an optional pin.
   ["variants", "base_release_id", "INTEGER"],
   ["variants", "pinned_release_id", "INTEGER"],
-  ["variants", "playtest", "TEXT"]
+  ["variants", "playtest", "TEXT"],
+  ["variants", "approval", "TEXT"],
+  ["variants", "deleted_at", "TEXT"],
+  ["variants", "recipe_origin", "TEXT"]
 ];
 
 export const VARIANT_STATUSES = ["draft", "review", "approved", "live"];
@@ -127,6 +138,8 @@ const variantRow = (row) =>
     id: row.id,
     gameId: row.game_id,
     name: row.name,
+    deletedAt: row.deleted_at ?? null,
+    recipeOrigin: row.recipe_origin ? JSON.parse(row.recipe_origin) : null,
     overrides: JSON.parse(row.overrides),
     revision: row.revision,
     fieldRevs: JSON.parse(row.field_revs),
@@ -136,6 +149,7 @@ const variantRow = (row) =>
     updatedBy: row.updated_by,
     baseReleaseId: row.base_release_id,
     pinnedReleaseId: row.pinned_release_id,
+    approval: row.approval ? JSON.parse(row.approval) : null,
     playtest: row.playtest ? JSON.parse(row.playtest) : null,
     createdAt: row.created_at,
     updatedAt: row.updated_at
@@ -215,26 +229,89 @@ export function openDb(file) {
     if (!has) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${def}`);
   }
 
+  // Legacy variants must have an explicit base and cannot retain an unverifiable approval.
+  db.exec(
+    "UPDATE variants SET base_release_id = (SELECT MAX(id) FROM releases WHERE game_id = variants.game_id) WHERE base_release_id IS NULL"
+  );
+  db.exec("UPDATE variants SET status = 'draft' WHERE status IN ('approved', 'live') AND approval IS NULL");
+
+  let txDepth = 0;
   const tx = (fn) => {
-    db.exec("BEGIN");
+    db.exec("SAVEPOINT studio_tx_" + ++txDepth);
     try {
       const out = fn();
-      db.exec("COMMIT");
+      db.exec("RELEASE studio_tx_" + txDepth--);
       return out;
     } catch (e) {
-      db.exec("ROLLBACK");
+      db.exec("ROLLBACK TO studio_tx_" + txDepth);
+      db.exec("RELEASE studio_tx_" + txDepth--);
       throw e;
     }
   };
 
   return {
     close: () => db.close(),
+    listRecipes(gameId) {
+      return db
+        .prepare("SELECT * FROM recipes WHERE game_id = ? ORDER BY id DESC")
+        .all(gameId)
+        .map((r) => ({ id: r.id, ...JSON.parse(r.definition), createdBy: r.created_by, createdAt: r.created_at }));
+    },
+    saveRecipe(gameId, definition, user) {
+      return tx(() => {
+        const result = db
+          .prepare("INSERT INTO recipes (game_id, definition, created_by, created_at) VALUES (?, ?, ?, ?)")
+          .run(gameId, JSON.stringify(definition), user, now());
+        this._linkUploads(
+          gameId,
+          Object.fromEntries(definition.axes.flatMap((a) => a.values.map((v, i) => [a.path + ":" + i, v])))
+        );
+        return { id: Number(result.lastInsertRowid), ...definition };
+      });
+    },
+    recipeRun(id) {
+      const r = db.prepare("SELECT * FROM recipe_runs WHERE id = ?").get(id);
+      return (
+        r && {
+          gameId: r.game_id,
+          fingerprint: r.fingerprint,
+          provenance: JSON.parse(r.provenance),
+          variantIds: JSON.parse(r.variant_ids)
+        }
+      );
+    },
+    generateRecipe(gameId, id, fingerprint, provenance, candidates, user) {
+      return tx(() => {
+        const variants = candidates.map((c) =>
+          this.createVariant(gameId, c.name, c.overrides, {
+            user,
+            kind: "recipe",
+            tags: ["recipe", `run:${id.slice(0, 8)}`],
+            baseReleaseId: provenance.releaseId,
+            pinnedReleaseId: provenance.releaseId
+          })
+        );
+        for (const v of variants)
+          db.prepare("UPDATE variants SET recipe_origin = ? WHERE id = ?").run(
+            JSON.stringify({ runId: id, ...provenance }),
+            v.id
+          );
+        db.prepare("INSERT INTO recipe_runs VALUES (?, ?, ?, ?, ?)").run(
+          id,
+          gameId,
+          fingerprint,
+          JSON.stringify(provenance),
+          JSON.stringify(variants.map((v) => v.id))
+        );
+        return { variantIds: variants.map((v) => v.id), provenance };
+      });
+    },
 
     listGames() {
       return db
         .prepare(
           `SELECT g.id, g.title, g.created_at,
-             (SELECT COUNT(*) FROM variants v WHERE v.game_id = g.id) AS variant_count,
+             (SELECT COUNT(*) FROM variants v WHERE v.game_id = g.id AND v.deleted_at IS NULL) AS variant_count,
              (SELECT MAX(id) FROM releases r WHERE r.game_id = g.id) AS latest_release_id
            FROM games g ORDER BY g.title COLLATE NOCASE`
         )
@@ -303,15 +380,25 @@ export function openDb(file) {
       return releaseRow(db.prepare("SELECT * FROM releases WHERE id = ?").get(id));
     },
 
-    listVariants(gameId) {
-      return db.prepare("SELECT * FROM variants WHERE game_id = ? ORDER BY id").all(gameId).map(variantRow);
+    listVariants(gameId, includeDeleted = false) {
+      return db
+        .prepare(
+          `SELECT * FROM variants WHERE game_id = ? ${includeDeleted ? "" : "AND deleted_at IS NULL"} ORDER BY id`
+        )
+        .all(gameId)
+        .map(variantRow);
     },
 
     getVariant(id) {
-      return variantRow(db.prepare("SELECT * FROM variants WHERE id = ?").get(id));
+      return variantRow(db.prepare("SELECT * FROM variants WHERE id = ? AND deleted_at IS NULL").get(id));
     },
 
-    createVariant(gameId, name, overrides = {}, { user = null, tags = [], status = "draft", kind = "create" } = {}) {
+    createVariant(
+      gameId,
+      name,
+      overrides = {},
+      { user = null, tags = [], status = "draft", kind = "create", baseReleaseId = null, pinnedReleaseId = null } = {}
+    ) {
       return tx(() => {
         const at = now();
         const { lastInsertRowid } = db
@@ -320,8 +407,25 @@ export function openDb(file) {
                created_at, updated_at)
              VALUES (?, ?, ?, ?, ?, ?, ?, (SELECT MAX(id) FROM releases WHERE game_id = ?), ?, ?)`
           )
-          .run(gameId, name, JSON.stringify(overrides), JSON.stringify(tags), status, user, user, gameId, at, at);
+          .run(
+            gameId,
+            name,
+            JSON.stringify(overrides),
+            JSON.stringify(tags),
+            ["draft", "review"].includes(status) ? status : "draft",
+            user,
+            user,
+            gameId,
+            at,
+            at
+          );
         const id = Number(lastInsertRowid);
+        if (baseReleaseId)
+          db.prepare("UPDATE variants SET base_release_id = ?, pinned_release_id = ? WHERE id = ?").run(
+            baseReleaseId,
+            pinnedReleaseId,
+            id
+          );
         this._history(this.getVariant(id), Object.keys(overrides), kind, user);
         this._linkUploads(gameId, overrides);
         return this.getVariant(id);
@@ -350,6 +454,23 @@ export function openDb(file) {
           if (patch[prop] !== undefined && !same(current[prop], patch[prop]))
             changes.set(key, [current[prop], patch[prop]]);
         }
+        if (patch.baseReleaseId !== undefined && patch.baseReleaseId !== current.baseReleaseId)
+          changes.set("$base", [current.baseReleaseId, patch.baseReleaseId]);
+        const contentChanged = [...changes.keys()].some((k) => k !== "$status");
+        let approval = current.approval;
+        if (contentChanged && ["approved", "live"].includes(current.status)) {
+          patch = { ...patch, status: "draft" };
+          changes.set("$status", [current.status, "draft"]);
+          approval = null;
+        }
+        if (["approved", "live"].includes(patch.status)) {
+          const releaseId =
+            patch.pinnedReleaseId ?? patch.baseReleaseId ?? current.pinnedReleaseId ?? current.baseReleaseId;
+          if (!releaseId) throw new Error("Choose a release before approving this variant");
+          patch = { ...patch, pinnedReleaseId: releaseId };
+          if (current.pinnedReleaseId !== releaseId) changes.set("$pin", [current.pinnedReleaseId, releaseId]);
+          approval = { revision: current.revision + (changes.size ? 1 : 0), releaseId, user, at: now() };
+        } else if (patch.status !== undefined && !["approved", "live"].includes(patch.status)) approval = null;
         const baseRelease = patch.baseReleaseId !== undefined && patch.baseReleaseId !== current.baseReleaseId;
         if (!changes.size && !baseRelease) return current;
 
@@ -390,6 +511,8 @@ export function openDb(file) {
           changes.size ? now() : current.updatedAt,
           id
         );
+        if (contentChanged) db.prepare("UPDATE variants SET playtest = NULL WHERE id = ?").run(id);
+        db.prepare("UPDATE variants SET approval = ? WHERE id = ?").run(approval ? JSON.stringify(approval) : null, id);
         const saved = this.getVariant(id);
         if (changes.size) {
           this._history(saved, [...changes.keys()], kind, user);
@@ -417,10 +540,13 @@ export function openDb(file) {
     },
 
     deleteVariant(id) {
-      return tx(() => {
-        db.prepare("DELETE FROM variant_revisions WHERE variant_id = ?").run(id);
-        return db.prepare("DELETE FROM variants WHERE id = ?").run(id).changes > 0;
-      });
+      return (
+        db.prepare("UPDATE variants SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL").run(now(), id).changes > 0
+      );
+    },
+    restoreDeletedVariant(id, gameId) {
+      db.prepare("UPDATE variants SET deleted_at = NULL WHERE id = ? AND game_id = ?").run(id, gameId);
+      return this.getVariant(id);
     },
 
     /** One history entry per edit session: a user's autosaves within HISTORY_MERGE_MS are merged. */
@@ -561,6 +687,8 @@ export function openDb(file) {
     },
 
     // ── deleting & storage ─────────────────────────────────────────────────
+    hasReleaseExports: (id) => !!db.prepare("SELECT 1 FROM exports WHERE release_id = ? LIMIT 1").get(id),
+
     deleteRelease: (id) => db.prepare("DELETE FROM releases WHERE id = ?").run(id).changes > 0,
 
     /** Removes the game with its variants, history, releases, exports and library; returns the release ids. */
@@ -573,7 +701,7 @@ export function openDb(file) {
         db.prepare("DELETE FROM variant_revisions WHERE variant_id IN (SELECT id FROM variants WHERE game_id = ?)").run(
           gameId
         );
-        for (const table of ["variants", "releases", "exports", "game_assets"])
+        for (const table of ["variants", "releases", "exports", "game_assets", "recipes", "recipe_runs"])
           db.prepare(`DELETE FROM ${table} WHERE game_id = ?`).run(gameId);
         db.prepare("DELETE FROM games WHERE id = ?").run(gameId);
         return releaseIds;

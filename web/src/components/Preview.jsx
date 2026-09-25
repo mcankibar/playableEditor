@@ -101,7 +101,9 @@ export function Preview({
   onPreviewLang,
   release,
   highlight = null,
-  onSelectComponent
+  onSelectComponent,
+  comparisonView = null,
+  restartKey = 0
 }) {
   const [view, setView] = useState(() => {
     const saved = stored("pl-device", {});
@@ -117,9 +119,10 @@ export function Preview({
       store("pl-device", next);
       return next;
     });
-  const model = DEVICES.find((d) => d.id === view.id);
-  const base = model.id === "custom" ? { ...model, ...view.custom } : model;
-  const device = view.landscape ? { ...base, width: base.height, height: base.width } : base;
+  const activeView = comparisonView ?? view;
+  const model = DEVICES.find((d) => d.id === activeView.id);
+  const base = model.id === "custom" ? { ...model, ...activeView.custom } : model;
+  const device = activeView.landscape ? { ...base, width: base.height, height: base.width } : base;
   const [run, setRun] = useState(0);
   const [ready, setReady] = useState(false);
   const [inspectable, setInspectable] = useState(false);
@@ -195,12 +198,13 @@ export function Preview({
   useEffect(() => {
     const win = frame.current?.contentWindow;
     if (!win || !releaseId) return;
+    setReady(false);
     setInspectable(false);
     const { overrides: o, assets: a } = latest.current.payload;
     win.name = PREVIEW_PREFIX + JSON.stringify({ overrides: o, assets: a });
     sent.current = latest.current.signature;
     win.location.replace(releasePlayUrl(releaseId));
-  }, [run, releaseId]);
+  }, [run, releaseId, restartKey]);
 
   useEffect(() => {
     if (!ready || sent.current === signature) return;
@@ -229,72 +233,74 @@ export function Preview({
 
   return (
     <section className="preview">
-      <div className="preview-bar">
-        <select value={view.id} onChange={(e) => changeView({ id: e.target.value })} title="Device">
-          {GROUPS.map((g) => (
-            <optgroup key={g} label={g}>
-              {DEVICES.filter((d) => d.group === g).map((d) => (
-                <option key={d.id} value={d.id}>
-                  {d.label}
-                  {d.id === "custom" ? "" : ` · ${d.width}×${d.height}`}
-                </option>
-              ))}
-            </optgroup>
-          ))}
-        </select>
-        {view.id === "custom" && (
-          <span className="custom-size">
-            <SizeInput
-              label="Width"
-              value={view.custom.width}
-              onChange={(width) => changeView({ custom: { ...view.custom, width } })}
-            />
-            ×
-            <SizeInput
-              label="Height"
-              value={view.custom.height}
-              onChange={(height) => changeView({ custom: { ...view.custom, height } })}
-            />
-          </span>
-        )}
-        <button
-          onClick={() => changeView({ landscape: !view.landscape })}
-          title={view.landscape ? "Rotate to portrait" : "Rotate to landscape"}
-          aria-label="Rotate"
-        >
-          {view.landscape ? "▭ Landscape" : "▯ Portrait"}
-        </button>
-        {languages && (
-          <label className="inline" title="Preview only; not saved to the variant">
-            Language
-            <select value={previewLang} onChange={(e) => onPreviewLang(e.target.value)}>
-              {languages.map((l) => (
-                <option key={l} value={l}>
-                  {l === "" ? "Variant's language" : l}
-                </option>
-              ))}
-            </select>
-          </label>
-        )}
-        <span className="spacer" />
-        <button
-          className={`select-toggle${inspecting ? " active" : ""}`}
-          disabled={!inspectable}
-          aria-pressed={inspecting}
-          onClick={() => setInspecting((v) => !v)}
-          title={
-            inspectable
-              ? "Click a part of the game to edit it (Esc to stop)"
-              : "This release can't be selected in — rebuild it with the latest template"
-          }
-        >
-          ⌖ Select
-        </button>
-        <span className="muted small">{ready ? `${device.width}×${device.height}` : "Starting…"}</span>
-        <button onClick={restart} title="Restart the game with the current values">
-          ↻ Restart
-        </button>
-      </div>
+      {!comparisonView && (
+        <div className="preview-bar">
+          <select value={view.id} onChange={(e) => changeView({ id: e.target.value })} title="Device">
+            {GROUPS.map((g) => (
+              <optgroup key={g} label={g}>
+                {DEVICES.filter((d) => d.group === g).map((d) => (
+                  <option key={d.id} value={d.id}>
+                    {d.label}
+                    {d.id === "custom" ? "" : ` · ${d.width}×${d.height}`}
+                  </option>
+                ))}
+              </optgroup>
+            ))}
+          </select>
+          {view.id === "custom" && (
+            <span className="custom-size">
+              <SizeInput
+                label="Width"
+                value={view.custom.width}
+                onChange={(width) => changeView({ custom: { ...activeView.custom, width } })}
+              />
+              ×
+              <SizeInput
+                label="Height"
+                value={view.custom.height}
+                onChange={(height) => changeView({ custom: { ...activeView.custom, height } })}
+              />
+            </span>
+          )}
+          <button
+            onClick={() => changeView({ landscape: !view.landscape })}
+            title={view.landscape ? "Rotate to portrait" : "Rotate to landscape"}
+            aria-label="Rotate"
+          >
+            {view.landscape ? "▭ Landscape" : "▯ Portrait"}
+          </button>
+          {languages && (
+            <label className="inline" title="Preview only; not saved to the variant">
+              Language
+              <select value={previewLang} onChange={(e) => onPreviewLang(e.target.value)}>
+                {languages.map((l) => (
+                  <option key={l} value={l}>
+                    {l === "" ? "Variant's language" : l}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          <span className="spacer" />
+          <button
+            className={`select-toggle${inspecting ? " active" : ""}`}
+            disabled={!inspectable}
+            aria-pressed={inspecting}
+            onClick={() => setInspecting((v) => !v)}
+            title={
+              inspectable
+                ? "Click a part of the game to edit it (Esc to stop)"
+                : "This release can't be selected in — rebuild it with the latest template"
+            }
+          >
+            ⌖ Select
+          </button>
+          <span className="muted small">{ready ? `${device.width}×${device.height}` : "Starting…"}</span>
+          <button onClick={restart} title="Restart the game with the current values">
+            ↻ Restart
+          </button>
+        </div>
+      )}
       {inspecting && (
         <div className="select-hint">
           {hovered ? "Click to edit this part" : "Point at a part of the game — click it to edit its settings"}

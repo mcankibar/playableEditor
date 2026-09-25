@@ -17,6 +17,7 @@ function copyNew(fromDir, toDir) {
   fs.mkdirSync(toDir, { recursive: true });
   let copied = 0;
   for (const file of fs.readdirSync(fromDir)) {
+    if (file.endsWith(".part")) continue;
     const to = path.join(toDir, file);
     if (fs.existsSync(to)) continue;
     fs.copyFileSync(path.join(fromDir, file), to + ".part");
@@ -49,11 +50,13 @@ export function runBackup({ db, store, backupDir, keep = 14 }) {
   const part = file + ".part";
   fs.rmSync(part, { force: true });
   db.backupTo(part);
-  fs.renameSync(part, file);
+
   const releases = copyNew(store.releasesDir, path.join(backupDir, "releases"));
   const assets = copyNew(store.assetsDir, path.join(backupDir, "assets"));
+  const exports = copyNew(store.exportsDir, path.join(backupDir, "exports"));
+  fs.renameSync(part, file); // Publish the snapshot only after all referenced immutable files exist.
   for (const old of listBackups(backupDir).slice(keep)) fs.rmSync(path.join(dbDir, old.file), { force: true });
-  return { file, releases, assets };
+  return { file, releases, assets, exports };
 }
 
 /** Backs up now if the last backup is older than a day, then checks every hour. */

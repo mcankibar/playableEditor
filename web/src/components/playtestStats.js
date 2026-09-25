@@ -36,13 +36,15 @@ export function aggregate(results) {
   }
   const runs = results.length;
   const wins = outcomes.won;
-  const winRate = runs ? Math.round((wins / runs) * 100) : 0;
+  const completed = outcomes.won + outcomes.lost;
+  const winRate = completed ? Math.round((wins / completed) * 100) : 0;
   const winsList = results.filter((r) => r.outcome === "won");
   return {
     runs,
+    completed,
     wins,
     winRate,
-    label: runs ? difficultyLabel(winRate) : null,
+    label: completed ? difficultyLabel(winRate) : null,
     avgMovesLeft: average(winsList.map((r) => r.movesLeft).filter(isNumber)),
     avgSteps: average(results.map((r) => r.steps).filter(isNumber)),
     outcomes,
@@ -73,5 +75,12 @@ export function checkStatus(result) {
   if (!result || result.outcome === "unsupported") return { check: "unsupported" };
   const message = result.errors?.[0];
   if (result.outcome === "error" || message) return { check: "error", error: String(message || "Unknown error") };
-  return { check: "ok" };
+  if (["won", "lost", "checked"].includes(result.outcome)) return { check: "ok" };
+  return {
+    check: "error",
+    error:
+      result.outcome === "stuck"
+        ? "No legal moves / game stuck"
+        : "Playtest did not complete (timeout or invalid result)"
+  };
 }

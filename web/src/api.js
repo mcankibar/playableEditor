@@ -27,6 +27,9 @@ async function request(method, url, body, { raw = false, headers = {} } = {}) {
 const enc = encodeURIComponent;
 
 export const api = {
+  recipes: (gameId) => request("GET", `/api/games/${enc(gameId)}/recipes`),
+  recipeAction: (gameId, action, body) =>
+    request("POST", `/api/games/${enc(gameId)}/recipes${action ? "/" + action : ""}`, body),
   me: () => request("GET", "/api/me"),
   login: (username, password) => request("POST", "/api/login", { username, password }),
   logout: () => request("POST", "/api/logout"),
@@ -42,11 +45,15 @@ export const api = {
   importVariant: (gameId, file) => request("POST", `/api/games/${enc(gameId)}/variants/import`, file),
   /** body: { baseRevision, set, unset, name, tags, status, pinnedReleaseId, baseReleaseId, force } */
   patchVariant: (id, body) => request("PATCH", `/api/variants/${id}`, body),
+  trash: (gameId) => request("GET", `/api/games/${enc(gameId)}/trash`),
+  restoreDeleted: (gameId, id) => request("POST", `/api/games/${enc(gameId)}/trash/${id}/restore`),
   deleteVariant: (id) => request("DELETE", `/api/variants/${id}`),
   variantUploads: (id) => request("GET", `/api/variants/${id}/uploads`),
   revisions: (id) => request("GET", `/api/variants/${id}/revisions`),
   revision: (id, revision) => request("GET", `/api/variants/${id}/revisions/${revision}`),
-  restore: (id, revision) => request("POST", `/api/variants/${id}/restore`, { revision }),
+  restore: (id, revision, baseRevision) => request("POST", `/api/variants/${id}/restore`, { revision, baseRevision }),
+  playtestSnapshot: (id, releaseId, revision) =>
+    request("POST", `/api/variants/${id}/playtest-snapshot`, { releaseId, revision }),
   savePlaytest: (id, result) => request("POST", `/api/variants/${id}/playtest`, result),
 
   uploadAsset: (name, base64, gameId) => request("POST", "/api/assets", { name, base64, gameId }),

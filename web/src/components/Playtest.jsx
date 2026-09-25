@@ -13,7 +13,7 @@ const LOG_LINES = 60;
 const UNSUPPORTED = "This game doesn't support playtesting yet.";
 
 const DIFFICULTY_BOT = { maxSteps: 300, timeoutMs: 120000 };
-const CHECK_BOT = { strategy: "greedy", speed: 8, maxSteps: 6, timeoutMs: 30000 };
+const CHECK_BOT = { mode: "check", strategy: "greedy", speed: 8, maxSteps: 6, timeoutMs: 30000 };
 
 const texts = (list) => (Array.isArray(list) ? list.map(String) : []);
 const num = (n) => (typeof n === "number" && Number.isFinite(n) ? n : null);
@@ -70,7 +70,7 @@ function playOnce({ frame, releaseId, variant, bot, stopper, onStep }) {
         onStep({ step: num(data.step), movesLeft: num(data.movesLeft), goalsLeft: num(data.goalsLeft) });
       } else if (data.type === "pl:bot-result" && phase === "playing") {
         done({
-          outcome: OUTCOMES.includes(data.outcome) ? data.outcome : "error",
+          outcome: [...OUTCOMES, "checked"].includes(data.outcome) ? data.outcome : "error",
           steps: num(data.steps) ?? 0,
           movesLeft: num(data.movesLeft),
           goalsLeft: num(data.goalsLeft),
@@ -174,7 +174,7 @@ export function Playtest({ releaseId, release, variants, onClose, onResult }) {
       return;
     }
     const summary = difficultySummary(aggregate(done), { releaseId, revision: variant.revision, strategy, speed });
-    callbacks.current.onResult?.(variant.id, summary);
+    callbacks.current.onResult?.(variant.id, { ...summary, snapshotHash: variant.snapshotHash });
   }
 
   async function runCheck() {
@@ -202,7 +202,12 @@ export function Playtest({ releaseId, release, variants, onClose, onResult }) {
         setNotice(UNSUPPORTED);
         for (const rest of variants.slice(i)) {
           found[rest.id] = { check: "unsupported" };
-          callbacks.current.onResult?.(rest.id, { releaseId, revision: rest.revision, check: "unsupported" });
+          callbacks.current.onResult?.(rest.id, {
+            releaseId,
+            revision: rest.revision,
+            snapshotHash: rest.snapshotHash,
+            check: "unsupported"
+          });
         }
         break;
       }
@@ -210,7 +215,13 @@ export function Playtest({ releaseId, release, variants, onClose, onResult }) {
       found[v.id] = { ...status, ms: r.wallMs, outcome: r.outcome };
       setChecks({ ...found });
       addLog(`${v.name}: ${status.check}${status.error ? ` · ${status.error}` : ""}`);
-      callbacks.current.onResult?.(v.id, { releaseId, revision: v.revision, ...status });
+      callbacks.current.onResult?.(v.id, {
+        releaseId,
+        revision: v.revision,
+        snapshotHash: v.snapshotHash,
+        outcome: r.outcome,
+        ...status
+      });
     }
     setChecks({ ...found });
     if (stopped.current) addLog("Stopped");
@@ -414,8 +425,10 @@ function DifficultyStats({ stats, partial }) {
       <div className="pt-headline">
         <span className="pt-rate">{stats.winRate}%</span>
         <span>
-          win rate{partial ? " so far" : ""} ·{" "}
-          <strong className={`pt-label ${stats.label.toLowerCase().replace(" ", "-")}`}>{stats.label}</strong>
+          bot win rate{partial ? " so far" : ""} ·{" "}
+          <strong className={`pt-label ${(stats.label || "unrated").toLowerCase().replace(" ", "-")}`}>
+            {stats.label || "Unrated"}
+          </strong>
         </span>
       </div>
       <dl className="pt-facts">

@@ -264,7 +264,7 @@ test("export errors are reported, and fields removed in a newer release become o
 
     await put({ "components.cta.scale": 1.5 });
     await upload(app, releaseHtml({ releaseId: "r2", extraField: false }));
-    const res = await exp({ networks: ["default"], langs: ["auto"] });
+    const res = await exp({ releaseId: 2, networks: ["default"], langs: ["auto"] });
     assert.equal(res.statusCode, 200);
     assert.equal(readJson(res.body, "config")["components.cta.scale"], undefined);
     const old = await exp({ releaseId: 1, networks: ["default"], langs: ["auto"] });

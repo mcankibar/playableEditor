@@ -1,6 +1,7 @@
 // HTTP API. Every /api route needs a signed-in user (session cookie), except POST /api/login.
 // Publish tokens (Authorization: Bearer) can only upload releases — for `npm run release` / CI.
 import crypto from "node:crypto";
+import { expandRecipe } from "./recipes.js";
 import path from "node:path";
 import Fastify from "fastify";
 import fs from "node:fs";
@@ -117,7 +118,7 @@ export async function buildApp({
   const db = openDb(path.join(dataDir, "studio.db"));
   const app = Fastify({ logger, bodyLimit: BODY_LIMIT, trustProxy });
   const pool = createWorkerPool();
-  const jobs = createJobs();
+  const jobs = createJobs(store.jobsDir);
   app.addHook("onClose", () => pool.close());
   if (backup?.dir) {
     const stop = scheduleBackups({ db, store, backupDir: backup.dir, keep: backup.keep, log: app.log });
@@ -222,7 +223,10 @@ export async function buildApp({
 
   /** The release a variant uses by default: its pin, else the game's latest. */
   const defaultRelease = (v) =>
-    (v.pinnedReleaseId && db.getRelease(v.pinnedReleaseId)) || db.listReleases(v.gameId)[0] || null;
+    (v.pinnedReleaseId && db.getRelease(v.pinnedReleaseId)) ||
+    (v.baseReleaseId && db.getRelease(v.baseReleaseId)) ||
+    db.listReleases(v.gameId)[0] ||
+    null;
 
   function gameRelease(gameId, id) {
     const rel = release(id);
@@ -255,6 +259,78 @@ export async function buildApp({
     }
     return uploads;
   }
+
+  function recipeContext(req) {
+    const gameId = req.params.gameId;
+    game(gameId);
+    const v = variant(req.body?.baseVariantId);
+    if (v.gameId !== gameId) throw badRequest("Base variant belongs to another game");
+    if (v.revision !== req.body?.baseRevision) throw new HttpError(409, "Base variant changed. Reopen recipes.");
+    const rel = gameRelease(gameId, req.body?.releaseId);
+    return { v, rel, manifest: store.release(rel.id).manifest };
+  }
+  function recipeCandidates(recipe, manifest, base) {
+    const mimeTypes = { image: "image/", sound: "audio/", model: "model/", font: "font/", data: "application/json" };
+    return expandRecipe(recipe, manifest, base, (id, type) => {
+      const asset = db.getAsset(id);
+      return !!asset && asset.mime.startsWith(mimeTypes[type]);
+    });
+  }
+  app.get("/api/games/:gameId/recipes", async (req) => {
+    game(req.params.gameId);
+    return db.listRecipes(req.params.gameId);
+  });
+  app.post("/api/games/:gameId/recipes/preview", async (req) => {
+    const { v, manifest } = recipeContext(req);
+    return recipeCandidates(req.body.recipe, manifest, v.overrides);
+  });
+  app.post("/api/games/:gameId/recipes", async (req) => {
+    const { v, manifest } = recipeContext(req);
+    recipeCandidates(req.body.recipe, manifest, v.overrides);
+    const { name, axes } = req.body.recipe;
+    return db.saveRecipe(v.gameId, { name, axes }, who(req));
+  });
+  app.post("/api/games/:gameId/recipes/generate", async (req) => {
+    const body = req.body ?? {};
+    if (typeof body.requestId !== "string" || !/^[a-zA-Z0-9-]{16,80}$/.test(body.requestId))
+      throw badRequest("Invalid request id");
+    game(req.params.gameId);
+    const fingerprint = crypto
+      .createHash("sha256")
+      .update(
+        JSON.stringify({
+          gameId: req.params.gameId,
+          baseVariantId: body.baseVariantId,
+          baseRevision: body.baseRevision,
+          releaseId: body.releaseId,
+          recipe: body.recipe
+        })
+      )
+      .digest("hex");
+    const previous = db.recipeRun(body.requestId);
+    if (previous) {
+      if (previous.gameId !== req.params.gameId || previous.fingerprint !== fingerprint)
+        throw new HttpError(409, "Request id already used");
+      return previous;
+    }
+    const { v, rel, manifest } = recipeContext(req);
+    const candidates = recipeCandidates(body.recipe, manifest, v.overrides);
+    return db.generateRecipe(
+      v.gameId,
+      body.requestId,
+      fingerprint,
+      {
+        recipe: body.recipe,
+        baseVariantId: v.id,
+        baseRevision: v.revision,
+        releaseId: rel.id,
+        user: who(req),
+        createdAt: new Date().toISOString()
+      },
+      candidates,
+      who(req)
+    );
+  });
 
   // ── games & releases ─────────────────────────────────────────────────────
   app.get("/api/networks", async () =>
@@ -366,11 +442,13 @@ export async function buildApp({
       const source = variant(copyFrom);
       if (source.gameId !== gameId) throw badRequest("copyFrom belongs to another game");
       overrides = source.overrides;
-      copied = { tags: source.tags };
+      copied = { tags: source.tags, baseReleaseId: source.baseReleaseId, pinnedReleaseId: source.pinnedReleaseId };
     }
     reply.status(201);
     return db.createVariant(gameId, variantName(name), overrides, {
       user: who(req),
+      baseReleaseId: copied.baseReleaseId,
+      pinnedReleaseId: copied.pinnedReleaseId,
       tags: tags === undefined ? (copied.tags ?? []) : tagsBody(tags),
       status: status === undefined ? "draft" : statusBody(status),
       kind: copyFrom === undefined ? "create" : "copy"
@@ -427,7 +505,11 @@ export async function buildApp({
     if (body.unset !== undefined) patch.unset = stringList(body.unset, "unset");
     if (body.name !== undefined) patch.name = variantName(body.name);
     if (body.tags !== undefined) patch.tags = tagsBody(body.tags);
-    if (body.status !== undefined) patch.status = statusBody(body.status);
+    if (body.status !== undefined) {
+      patch.status = statusBody(body.status);
+      if (["approved", "live"].includes(patch.status) && body.baseRevision !== v.revision)
+        throw new HttpError(409, "Approve the current saved revision");
+    }
     if (body.pinnedReleaseId !== undefined)
       patch.pinnedReleaseId = body.pinnedReleaseId === null ? null : gameRelease(v.gameId, body.pinnedReleaseId).id;
     if (body.baseReleaseId !== undefined) patch.baseReleaseId = gameRelease(v.gameId, body.baseReleaseId).id;
@@ -452,18 +534,55 @@ export async function buildApp({
   // Body: { revision } → the variant gets that entry's name and values back (as a new revision).
   app.post("/api/variants/:id/restore", async (req) => {
     const v = variant(req.params.id);
+    if (req.body?.baseRevision !== undefined && req.body.baseRevision !== v.revision)
+      throw new HttpError(409, "Variant changed before restore. Refresh and try again.");
     const rev = db.getRevision(v.id, Number(req.body?.revision));
     if (!rev) throw notFound("Revision");
     return db.replaceVariant(v.id, { name: rev.name, overrides: rev.overrides }, { user: who(req), kind: "restore" });
   });
 
-  // The last playtest (bot) result: { releaseId, revision, runs, wins, … } from the Studio UI.
+  const playtestHash = (v, releaseId) =>
+    crypto
+      .createHash("sha256")
+      .update(JSON.stringify({ releaseId, revision: v.revision, overrides: v.overrides }))
+      .digest("hex");
+
+  app.post("/api/variants/:id/playtest-snapshot", async (req) => {
+    const v = variant(req.params.id);
+    const rel = gameRelease(v.gameId, req.body?.releaseId);
+    if (req.body?.revision !== v.revision) throw new HttpError(409, "Variant changed before the playtest started");
+    return {
+      ...v,
+      releaseId: rel.id,
+      snapshotHash: playtestHash(v, rel.id),
+      uploads: Object.fromEntries(
+        Object.entries(variantUploads(v.overrides)).map(([id, a]) => [id, `data:${a.mime};base64,${a.base64}`])
+      )
+    };
+  });
+
   app.post("/api/variants/:id/playtest", async (req) => {
     const v = variant(req.params.id);
-    const result = req.body ?? null;
-    if (result !== null && (!isPlainObject(result) || JSON.stringify(result).length > 20000))
-      throw badRequest("Invalid playtest result");
-    return db.setPlaytest(v.id, result && { ...result, by: who(req), at: new Date().toISOString() });
+    const result = req.body;
+    if (!isPlainObject(result) || JSON.stringify(result).length > 20000) throw badRequest("Invalid playtest result");
+    gameRelease(v.gameId, result.releaseId);
+    if (result.revision !== v.revision || result.snapshotHash !== playtestHash(v, result.releaseId))
+      throw new HttpError(409, "This playtest belongs to an older variant snapshot. Run it again.");
+    if (result.check !== undefined && !["ok", "error", "unsupported"].includes(result.check))
+      throw badRequest("Invalid check result");
+    if (result.check === "ok" && !["won", "lost", "checked"].includes(result.outcome))
+      throw badRequest("The playtest did not complete its check");
+    return db.setPlaytest(v.id, { ...result, by: who(req), at: new Date().toISOString() });
+  });
+
+  app.get("/api/games/:gameId/trash", async (req) =>
+    db.listVariants(game(req.params.gameId).id, true).filter((v) => v.deletedAt)
+  );
+  app.post("/api/games/:gameId/trash/:id/restore", async (req) => {
+    const id = game(req.params.gameId).id;
+    const v = db.listVariants(id, true).find((v) => v.id === Number(req.params.id) && v.deletedAt);
+    if (!v) throw notFound("Deleted variant");
+    return db.restoreDeletedVariant(v.id, id);
   });
 
   app.delete("/api/variants/:id", async (req, reply) => {
@@ -486,6 +605,9 @@ export async function buildApp({
     const { networks, langs } = body ?? {};
     if (!Array.isArray(networks) || !Array.isArray(langs)) throw badRequest("networks and langs must be arrays");
     if (!networks.length || !langs.length) throw badRequest("Pick at least one network and one language");
+    if (networks.length * langs.length > 32) throw badRequest("At most 32 network/language combinations per variant");
+    if (new Set(networks).size !== networks.length || new Set(langs).size !== langs.length)
+      throw badRequest("Duplicate networks or languages");
     for (const n of networks) if (!Object.hasOwn(EXPORT_NETWORKS, n)) throw badRequest(`Unknown network: ${n}`);
     return { networks: networks.map(String), langs: langs.map(String) };
   }
@@ -503,8 +625,14 @@ export async function buildApp({
       throw new HttpError(409, `The variant changed since (now revision ${v.revision}). Check it and export again.`);
     const rel = releaseId === undefined ? defaultRelease(v) : gameRelease(v.gameId, releaseId);
     if (!rel) throw badRequest("No release of this game to export");
+    if (v.approval && v.approval.releaseId !== rel.id)
+      throw new HttpError(
+        409,
+        "This revision was approved for a different release. Create a draft before exporting another build."
+      );
     const createdAt = new Date().toISOString();
     const out = await pool.run("export", {
+      exportsDir: store.exportsDir,
       releaseFile: store.releaseFile(rel.id),
       release: releaseInfo(rel),
       variant: { id: v.id, name: v.name, overrides: v.overrides },
@@ -543,13 +671,22 @@ export async function buildApp({
     return { exports: db.listExports(id), jobs: jobs.list(id).map(jobView) };
   });
 
-  // The same file again: made from the stored values; X-Export-Identical says whether the bytes match.
+  // Serve the immutable artifact. Legacy entries are reconstructed only when their original hash matches.
   app.get("/api/exports/:id/download", async (req, reply) => {
     const e = db.getExportSource(Number(req.params.id));
     if (!e) throw notFound("Export");
+    const archived = store.exportFile(e.sha256);
+    if (fs.existsSync(archived)) {
+      reply
+        .header("Content-Disposition", `attachment; filename="${e.fileName}"`)
+        .header("X-Export-Identical", "1")
+        .type(e.fileName.endsWith(".zip") ? "application/zip" : "text/html; charset=utf-8");
+      return fs.createReadStream(archived);
+    }
     const rel = db.getRelease(e.releaseId);
     if (!rel) throw badRequest(`Release r${e.releaseNumber} was deleted, so this export can't be made again`);
     const out = await pool.run("export", {
+      exportsDir: store.exportsDir,
       releaseFile: store.releaseFile(rel.id),
       release: releaseInfo(rel),
       variant: { id: e.variantId, name: e.variantName, overrides: e.overrides },
@@ -558,33 +695,44 @@ export async function buildApp({
       langs: e.langs,
       createdAt: e.createdAt
     });
+    if (out.sha256 !== e.sha256)
+      throw new HttpError(
+        409,
+        "The original export was not archived and the exporter has changed. Create a new export instead."
+      );
     reply
       .header("Content-Disposition", `attachment; filename="${out.fileName}"`)
-      .header("X-Export-Identical", out.sha256 === e.sha256 ? "1" : "0")
+      .header("X-Export-Identical", "1")
       .type(out.mime);
     return Buffer.from(out.data);
   });
 
   // Bulk export in the background. Body: { variantIds, releaseId?, networks, langs } → 202 job.
-  // Each variant uses the given release, or else its pinned release / the latest.
+  // Each variant uses the given release, or else its pinned / saved release.
   app.post("/api/games/:gameId/export-jobs", async (req, reply) => {
     const { id: gameId } = game(req.params.gameId);
     const { networks, langs } = exportRequest(req.body);
-    const { variantIds, releaseId } = req.body;
+    const { variantIds, releaseId, revisions } = req.body;
     if (!Array.isArray(variantIds) || !variantIds.length || variantIds.length > 500)
       throw badRequest("variantIds: 1–500 variants");
+    if (new Set(variantIds).size !== variantIds.length) throw badRequest("Duplicate variant ids");
     const variants = variantIds.map((vid) => {
       const v = variant(vid);
       if (v.gameId !== gameId) throw badRequest("A variant belongs to another game");
+      if (revisions?.[v.id] !== v.revision)
+        throw new HttpError(409, `${v.name} changed; refresh the selection and retry`);
       return v;
     });
     const byRelease = new Map();
     for (const v of variants) {
       const rel = releaseId === undefined ? defaultRelease(v) : gameRelease(gameId, releaseId);
       if (!rel) throw badRequest("No release of this game to export");
+      if (v.approval && v.approval.releaseId !== rel.id)
+        throw new HttpError(409, `${v.name} was approved for another release`);
       if (!byRelease.has(rel.id)) byRelease.set(rel.id, { rel, items: [] });
       byRelease.get(rel.id).items.push(v);
     }
+    if (variants.length * networks.length * langs.length > 2000) throw badRequest("At most 2000 output files per job");
     const createdAt = new Date().toISOString();
     const g = game(gameId);
     const job = jobs.create({
@@ -606,6 +754,7 @@ export async function buildApp({
         const out = await pool.run(
           "bulk",
           {
+            exportsDir: store.exportsDir,
             releaseFile: store.releaseFile(rel.id),
             release: releaseInfo(rel),
             items: items.map((v) => ({
@@ -654,14 +803,7 @@ export async function buildApp({
         }
       }
       if (parts.length > 1) {
-        // Variants pinned to different releases: one ZIP holding a ZIP per release.
-        const { zipSync } = await import("fflate");
-        const entries = {};
-        for (const { rel, partFile } of parts) {
-          entries[`r${rel.number}.zip`] = [fs.readFileSync(partFile), { level: 0 }];
-          fs.rmSync(partFile, { force: true });
-        }
-        fs.writeFileSync(job.zipFile, zipSync(entries));
+        await pool.run("combine", { parts, zipFile: job.zipFile });
       }
       job.results = results;
       job.size = fs.statSync(job.zipFile).size;
@@ -695,6 +837,7 @@ export async function buildApp({
     const overrides = overridesBody(req.body?.overrides ?? {});
     try {
       return await pool.run("estimate", {
+        exportsDir: store.exportsDir,
         releaseFile: store.releaseFile(rel.id),
         overrides,
         uploads: variantUploads(overrides)
@@ -709,8 +852,13 @@ export async function buildApp({
   app.delete("/api/releases/:id", async (req, reply) => {
     const rel = release(req.params.id);
     if (db.listReleases(rel.gameId).length === 1) throw badRequest("A game needs at least one release");
-    const pinned = db.listVariants(rel.gameId).filter((v) => v.pinnedReleaseId === rel.id);
-    if (pinned.length) throw badRequest(`Pinned by: ${pinned.map((v) => v.name).join(", ")} — unpin them first`);
+    const pinned = db
+      .listVariants(rel.gameId)
+      .filter((v) => v.pinnedReleaseId === rel.id || v.baseReleaseId === rel.id);
+    if (pinned.length)
+      throw badRequest(`Used by: ${pinned.map((v) => v.name).join(", ")} — move them to another release first`);
+    if (db.hasReleaseExports(rel.id))
+      throw badRequest("This release is referenced by export history and cannot be deleted");
     db.deleteRelease(rel.id);
     store.deleteRelease(rel.id);
     reply.status(204);

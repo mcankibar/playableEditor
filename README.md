@@ -49,25 +49,34 @@ npm run users -- revoke-tokens mehmet
 3. **Export.** Ağ × dil seçilir; tek çıktı doğrudan, birden fazlası `report.json` ile birlikte ZIP olarak
    iner. Çıktılar template'teki `npm run export` ile birebir aynıdır.
 
-Varyant release'e değil oyuna bağlıdır: yeni release geldiğinde varyantlar olduğu gibi yeni sürüme uygulanır.
-Her varyant en son hangi release ile düzenlendiğini/kontrol edildiğini saklar; daha yeni bir release varsa
-listede "New release — check" ve editörde bir uyarı çıkar (artık olmayan alanlarla birlikte). "Playtest" ile
-denenir, "Mark as checked" ile kapatılır; son release'te hatasız bir playtest de kontrol sayılır. Bir varyant
-**Releases** penceresinden bir release'e sabitlenebilir (pin): o zaman önizleme ve export o release'i kullanır.
+Varyantlar kaydedilmiş temel release üzerinde açılır; yeni build yüklemek mevcut varyantları otomatik
+olarak değiştirmez. Önizlemede yeni release seçilip kontrol edildikten sonra "Mark as checked" ile temel
+release açıkça güncellenir. Sabitlenmiş varyantlar pin kaldırılana kadar kendi release'inde kalır.
+Approved / Live durumu belirli bir revizyon ve release'e bağlıdır, onay release'i otomatik sabitler.
+İçerik veya release ilişkisi değişince onay ve playtest sonucu geçersizleşir, durum Draft olur.
+Eski veritabanındaki kanıtlanamayan onaylar ilk açılışta Draft'a döner.
 
 ## Birlikte çalışma
 
 - **Kayıt:** Editör sadece değişen alanları, başladığı revizyonla birlikte gönderir. İki kişi aynı varyantın
   farklı alanlarını düzenlerse ikisi de kaydedilir; açık editörler diğerinin değişikliğini ~8 sn içinde görür.
   Aynı alanı başkası değiştirdiyse "Conflicting changes" penceresi çıkar: _Keep mine_ / _Take theirs_.
+- **Çöp kutusu (Trash):** Silinen varyant, asset referansları ve geçmişi korunur; Restore ile geri alınır.
 - **Geçmiş (History):** Her düzenleme oturumu (aynı kişinin 10 dk içindeki kayıtları) bir kayıttır; ne değiştiği
   görülür, herhangi biri "Restore" ile geri getirilir (geri getirme de geçmişe yazılır).
 - **Export:** Ekrandaki revizyonla yapılır; kaydedilmemiş değişiklik varsa önce kaydedilir, sunucudaki varyant
   farklıysa export reddedilir. Her export kaydedilir (kim, hangi revizyon, release, ağ, dil) ve **Exports**
-  panelinden "Download again" ile aynı dosya yeniden üretilir (bayt bayt aynı olduğu kontrol edilir).
+  panelinden "Download again" ile `data/exports/<sha256>` arşivindeki orijinal dosya indirilir.
+  Eski, arşivsiz kayıtlar yalnızca yeniden üretilen dosyanın hash'i aynıysa indirilip arşivlenir;
+  farklı çıktı eski dosyaymış gibi sunulmaz.
 - **Toplu export:** Listede varyantlar işaretlenip "Export…" ile hepsi ağ × dil için arka planda paketlenir;
   ilerleme görünür, sonunda tek ZIP (varyant başına bir klasör + `export-summary.json`) iner. Paketleme
-  worker thread'lerde çalışır, API'yi bloklamaz.
+  worker thread'lerde çalışır; son ZIP de diske parça parça yazılır. Her seçilen varyantın revizyonu
+  kontrol edilir. İşler `data/jobs/` altında kalıcıdır; yeniden başlatmada yarım işler Failed olur ve
+  kullanıcı tekrar başlatır. Tamamlanan toplu ZIP'ler 24 saat geçicidir; tekil orijinal export'lar kalıcıdır.
+  Aynı anda en fazla 4 toplu iş, worker kuyruğunda 16 görev ve toplam 128 MiB girdi kabul edilir.
+  Bir varyant en fazla 32 ağ/dil kombinasyonu ve 96 MiB çıktı; bir toplu iş en fazla 2000 çıktı üretir.
+  Daha büyük işler daha küçük gruplara bölünmelidir.
 - **Kütüphane:** Arama (ad, etiket, kişi), durum (Draft / In review / Approved / Live) ve etiket filtreleri;
   işaretlenen varyantlara toplu durum/etiket. Yeni / kopya / ayrıntılar bir formla düzenlenir.
 - **Asset kütüphanesi:** Bir oyun için yüklenen her dosya o oyunun kütüphanesine girer; görsel alanlarındaki
@@ -86,19 +95,26 @@ denenir, "Mark as checked" ile kapatılır; son release'te hatasız bir playtest
   kalan hamle, hatalar. Sonuç varyanta kaydedilir ve listede görünür. Birden fazla varyant seçilince "Check",
   her birini kısa oynatıp yeni release'te yüklenip hatasız çalıştığını doğrular. Adaptörü olmayan oyunlarda
   "This game doesn't support playtesting yet" yazar.
+- Test yalnızca kaydedilmiş revizyonda başlar. Sunucu release/revizyon/ayarların hash'ini doğrular;
+  test sırasında değişen varyanta eski sonuç yazılmaz. Timeout ve stuck başarılı kontrol sayılmaz.
+  Kısa kontrolün tamamlanması runtime'dan `checked` sonucu gerektirir; bunun için oyun yeni template
+  runtime'ıyla tekrar build edilmelidir. Eski build'lerin timeout sonuçları güvenli biçimde başarısız sayılır.
+- Zorluk etiketi **bot tahminidir**: yalnızca won/lost koşuları kazanma oranına girer; hiç tamamlanan
+  koşu yoksa Unrated gösterilir. Teknik hatalar oyunu "Very hard" yapmaz. Bot seed'i oyunun kendi
+  rastgeleliğini seed etmez; oyun adaptörünün deterministik başlangıç sağlaması ayrıca gerekir.
 
 ## Yedek ve depolama
 
 Sunucu açıkken günde bir yedek alınır (`STUDIO_BACKUP_DIR`, varsayılan `data/` yanındaki `backups/`):
-`db/studio-<gün>.db` (son 14 gün) + `releases/` ve `assets/` (bir kez kopyalanır, dosyalar değişmez).
+`db/studio-<gün>.db` (son 14 gün) + `releases/`, `assets/` ve `exports/` (bir kez kopyalanır, dosyalar değişmez).
 Ana sayfadaki **Storage** bölümünde son yedek, "Back up now" ve "Clean up unused files" (hiçbir varyant,
 geçmiş kaydı, export kaydı ya da kütüphanenin kullanmadığı, bir günden eski yüklemeleri siler) vardır.
 
-Geri yükleme: Studio'yu durdur, `db/studio-<gün>.db` → `<data>/studio.db`, `releases/` ve `assets/` →
+Geri yükleme: Studio'yu durdur, `db/studio-<gün>.db` → `<data>/studio.db`, `releases/`, `assets/` ve `exports/` →
 `<data>/` kopyala, başlat. Yedek klasörünü başka bir diske (ya da senkronize bir klasöre) koy; aynı disk
 bozulursa yedek de gider.
 
-Silme: release'ler (son release ve sabitlenmiş olanlar hariç) Releases penceresinden, oyunlar ana sayfadan
+Silme: release'ler (son release, aktif/çöp kutusundaki varyantların ve export geçmişinin kullandıkları hariç) Releases penceresinden, oyunlar ana sayfadan
 (oyun kimliği yazılarak onaylanır) silinir.
 
 Template dev panelinin indirdiği `variant.json` dosyaları "İçe aktar" ile alınabilir. "JSON indir" aynı
@@ -160,3 +176,16 @@ değerleriyle başlar, tarayıcının yenilemede geri yüklediği eski bir `wind
 Rol/yetki ayrımı, varyant kartlarında önizleme görüntüsü, önizlemenin ayrı bir origin'de izole çalışması
 (şu an release'in kodu Studio ile aynı origin'de çalışır, yani önizleyen kişinin oturumuyla API'ye
 istek atabilir; release'leri ekipteki geliştiriciler yüklediği için kabul edilebilir).
+
+### Doğrulama
+
+`npm test`: API, eşzamanlı kayıt kuyruğu, polling çakışmaları, onay geçersizleştirme, playtest snapshot'ı,
+orijinal export arşivi, kalıcı iş kayıtları ve çöp kutusu regresyonları. `npm run build`: production UI.
+Preview hâlâ aynı origin'dedir ve kullanıcılar aynı yetkiye sahiptir; yalnızca güvenilen developer
+build'leri yüklenmelidir. Ayrı preview origin ve rol tabanlı yetkilendirme bu değişiklik kapsamında değildir.
+
+### Visual comparison and variation recipes
+
+Select **2–4 variants** in the left list and choose **Compare**. The editor flushes pending edits and captures saved revisions, including uploaded assets. All frames use the release selected in the top bar (shown explicitly in the dialog), the same viewport and orientation. **Restart all** reloads every frame. The difference table compares effective field values including defaults. This is live side-by-side comparison, not pixel-difference testing or deterministic synchronized gameplay; random scenes and load times may differ. Existing builds work without rebuilding.
+
+Open **Recipes** from a base variant. Add fields and alternatives, preview the Cartesian combinations, then **Create drafts**. A maximum of 6 fields, 20 alternatives per field and 100 drafts per run prevents accidental explosion. Drafts preserve the base's other overrides, are pinned to the chosen release, and retain recipe/base revision/run provenance. Recipes are saved per game for teammates to reuse. Changing a saved recipe in the form does not overwrite it: Save creates a new saved entry. Stale bases, duplicate values, unknown fields, invalid values and missing/incompatible assets are rejected; batch creation is atomic and retry-safe. Generated drafts follow the existing review/playtest/export workflow. SQLite backups include saved recipes and run metadata.

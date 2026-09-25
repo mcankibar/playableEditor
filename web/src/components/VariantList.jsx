@@ -21,8 +21,10 @@ export function VariantList({
   onError,
   beforeChange,
   onExport,
-  onPlaytest
+  onPlaytest,
+  onCompare
 }) {
+  const [trash, setTrash] = useState(null);
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState(""); // "" = all
   const [tag, setTag] = useState("");
@@ -64,7 +66,7 @@ export function VariantList({
     };
 
   const remove = act(async () => {
-    if (!window.confirm(`Delete "${selected.name}"? Its history goes with it.`)) return;
+    if (!window.confirm(`Move "${selected.name}" to Trash? Its history will be preserved.`)) return;
     await api.deleteVariant(selected.id);
     onChanged(variants.find((v) => v.id !== selected.id).id);
   });
@@ -93,7 +95,8 @@ export function VariantList({
 
   const bulk = [...checked];
   const bulkPatch = act(async (patchOf) => {
-    for (const v of variants.filter((x) => checked.has(x.id))) await api.patchVariant(v.id, patchOf(v));
+    for (const v of variants.filter((x) => checked.has(x.id)))
+      await api.patchVariant(v.id, { ...patchOf(v), baseRevision: v.revision });
     onChanged();
   });
 
@@ -160,6 +163,14 @@ export function VariantList({
           </button>
           <button
             className="small"
+            disabled={bulk.length < 2 || bulk.length > 4}
+            onClick={() => onCompare(bulk)}
+            title="Select 2–4 variants to compare on the selected release"
+          >
+            Compare
+          </button>
+          <button
+            className="small"
             onClick={() => onPlaytest(bulk)}
             title="Load and play each one briefly on the release"
           >
@@ -196,7 +207,11 @@ export function VariantList({
       <ul>
         {shown.map((v) => {
           const count = Object.keys(v.id === selectedId ? overrides : v.overrides).length;
-          const pt = v.playtest;
+          const pt =
+            v.playtest?.revision === v.revision &&
+            v.playtest?.releaseId === (v.pinnedReleaseId ?? v.baseReleaseId ?? latestReleaseId)
+              ? v.playtest
+              : null;
           return (
             <li key={v.id} className={v.id === selectedId ? "active" : ""}>
               <input
@@ -207,7 +222,7 @@ export function VariantList({
               />
               <button
                 className={`variant${v.id === selectedId ? " active" : ""}`}
-                onClick={() => v.id !== selectedId && onSelect(v.id)}
+                onClick={act(async () => v.id !== selectedId && onSelect(v.id))}
               >
                 <span className="variant-name">
                   {v.name}
@@ -244,7 +259,34 @@ export function VariantList({
         {shown.length === 0 && <li className="muted pad">No variant matches.</li>}
       </ul>
 
+      {trash && (
+        <div className="pad">
+          <strong>Trash</strong>
+          <button className="link" onClick={() => setTrash(null)}>
+            Close
+          </button>
+          {trash.length === 0 && <p className="muted">Trash is empty.</p>}
+          {trash.map((v) => (
+            <div key={v.id}>
+              {v.name}{" "}
+              <button
+                className="small"
+                onClick={act(async () => {
+                  await api.restoreDeleted(gameId, v.id);
+                  setTrash(await api.trash(gameId));
+                  await onChanged(v.id);
+                })}
+              >
+                Restore
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
       <div className="variant-actions">
+        <button className="small" onClick={() => api.trash(gameId).then(setTrash, (e) => onError(e.message))}>
+          Trash
+        </button>
         <button className="small" onClick={() => setForm({ mode: "copy", variant: selected })}>
           Duplicate
         </button>
@@ -279,7 +321,7 @@ export function VariantList({
           onClose={() => setForm(null)}
           onSubmit={act(async ({ name, tags, status: st }) => {
             if (form.mode === "edit") {
-              await api.patchVariant(form.variant.id, { name, tags, status: st });
+              await api.patchVariant(form.variant.id, { baseRevision: form.variant.revision, name, tags, status: st });
               onChanged();
             } else {
               const body = { name, tags, status: st, ...(form.mode === "copy" && { copyFrom: form.variant.id }) };

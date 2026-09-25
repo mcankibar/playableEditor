@@ -18,7 +18,7 @@ function remembered(key, fallback) {
 
 /**
  * One variant: exported right away. Several: a background job with progress, one ZIP at the end.
- * releaseId null (several variants) = each variant's pinned release, otherwise the latest.
+ * releaseId null (several variants) = each variant's pinned or saved release.
  */
 export function ExportDialog({
   gameId,
@@ -79,7 +79,11 @@ export function ExportDialog({
         onExported?.();
         return;
       }
-      let j = await api.startExportJob(gameId, { ...body, variantIds: variants.map((v) => v.id) });
+      let j = await api.startExportJob(gameId, {
+        ...body,
+        variantIds: variants.map((v) => v.id),
+        revisions: Object.fromEntries(variants.map((v) => [v.id, v.id === currentVariantId ? revision : v.revision]))
+      });
       setJob(j);
       while (j.state === "queued" || j.state === "running") {
         await new Promise((r) => setTimeout(r, 700));
@@ -119,7 +123,7 @@ export function ExportDialog({
             value={release}
             onChange={(e) => setRelease(e.target.value === "own" ? "own" : Number(e.target.value))}
           >
-            {bulk && <option value="own">Each variant's release (pinned, else latest)</option>}
+            {bulk && <option value="own">Each variant's release (pinned, else saved release)</option>}
             {releases.map((r, i) => (
               <option key={r.id} value={r.id}>
                 r{r.number}

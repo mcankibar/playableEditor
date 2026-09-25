@@ -182,7 +182,12 @@ test("bulk export runs as a job and records each variant; size estimate per netw
     const start = await app.inject({
       method: "POST",
       url: "/api/games/test-game/export-jobs",
-      payload: { variantIds: [v.id, copy.id], networks: ["default", "facebook"], langs: ["auto"] }
+      payload: {
+        variantIds: [v.id, copy.id],
+        revisions: { [v.id]: v.revision, [copy.id]: copy.revision },
+        networks: ["default", "facebook"],
+        langs: ["auto"]
+      }
     });
     assert.equal(start.statusCode, 202, start.body);
     let job = json(start);
@@ -235,7 +240,7 @@ test("asset library, deleting releases and games, and cleaning up unused files",
     const [r2, r1] = json(await app.inject("/api/games/test-game")).releases;
     await patch(app, v.id, { pinnedReleaseId: r1.id });
     assert.equal((await app.inject({ method: "DELETE", url: `/api/releases/${r1.id}` })).statusCode, 400);
-    await patch(app, v.id, { pinnedReleaseId: null });
+    await patch(app, v.id, { pinnedReleaseId: null, baseReleaseId: r2.id });
     assert.equal((await app.inject({ method: "DELETE", url: `/api/releases/${r1.id}` })).statusCode, 204);
     assert.equal((await app.inject({ method: "DELETE", url: `/api/releases/${r2.id}` })).statusCode, 400);
     assert.ok(!fs.existsSync(path.join(dataDir, "releases", `${r1.id}.html`)));
@@ -270,3 +275,206 @@ test("backups: a database copy per day plus release and asset files", () =>
     },
     (dataDir) => ({ backup: { dir: `${dataDir}-backup`, keep: 3 } })
   ));
+
+test("approval pins the reviewed release and edits invalidate approval", () =>
+  run(async (app) => {
+    const v = await setup(app);
+    const approved = json(await patch(app, v.id, { status: "approved", baseRevision: v.revision }));
+    assert.equal(approved.status, "approved");
+    assert.equal(approved.pinnedReleaseId, v.baseReleaseId);
+    assert.equal(approved.approval.revision, approved.revision);
+    const changed = json(
+      await patch(app, v.id, { baseRevision: approved.revision, set: { "components.cta.color": "#123456" } })
+    );
+    assert.equal(changed.status, "draft");
+    assert.equal(changed.approval, null);
+    assert.equal((await patch(app, v.id, { status: "approved", baseRevision: approved.revision })).statusCode, 409);
+  }));
+
+test("playtest snapshot rejects stale and false-positive results", () =>
+  run(async (app) => {
+    const v = await setup(app);
+    const snapshot = json(
+      await app.inject({
+        method: "POST",
+        url: `/api/variants/${v.id}/playtest-snapshot`,
+        payload: { revision: v.revision, releaseId: v.baseReleaseId }
+      })
+    );
+    const result = {
+      revision: v.revision,
+      releaseId: v.baseReleaseId,
+      snapshotHash: snapshot.snapshotHash,
+      check: "ok",
+      outcome: "checked"
+    };
+    const save = (payload) => app.inject({ method: "POST", url: `/api/variants/${v.id}/playtest`, payload });
+    assert.equal((await save({ ...result, outcome: "timeout" })).statusCode, 400);
+    assert.equal((await save(result)).statusCode, 200);
+    const changed = json(await patch(app, v.id, { set: { "components.cta.scale": 2 } }));
+    assert.equal(changed.playtest, null);
+    assert.equal((await save(result)).statusCode, 409);
+  }));
+
+test("archived bytes survive release file loss and referenced releases cannot be deleted", () =>
+  run(async (app, dataDir) => {
+    const v = await setup(app);
+    const out = await app.inject({
+      method: "POST",
+      url: `/api/variants/${v.id}/export`,
+      payload: { revision: v.revision, networks: ["default"], langs: ["auto"] }
+    });
+    assert.equal(out.statusCode, 200, out.body);
+    const id = Number(out.headers["x-export-id"]);
+    await upload(app, releaseHtml("r2"));
+    const r2 = json(await app.inject("/api/games/test-game")).releases[0];
+    await patch(app, v.id, { baseReleaseId: r2.id });
+    assert.equal((await app.inject({ method: "DELETE", url: `/api/releases/${v.baseReleaseId}` })).statusCode, 400);
+    fs.rmSync(path.join(dataDir, "releases", `${v.baseReleaseId}.html`));
+    const again = await app.inject(`/api/exports/${id}/download`);
+    assert.equal(again.statusCode, 200);
+    assert.deepEqual(again.rawPayload, out.rawPayload);
+  }));
+
+test("bulk export rejects stale selections before scheduling", () =>
+  run(async (app) => {
+    const v = await setup(app);
+    await patch(app, v.id, { set: { "components.cta.scale": 2 } });
+    const out = await app.inject({
+      method: "POST",
+      url: "/api/games/test-game/export-jobs",
+      payload: { variantIds: [v.id], revisions: { [v.id]: v.revision }, networks: ["default"], langs: ["auto"] }
+    });
+    assert.equal(out.statusCode, 409);
+  }));
+
+test("multi-release batch streams its final ZIP and archives each variant", () =>
+  run(async (app, dataDir) => {
+    const v = await setup(app);
+    await upload(app, releaseHtml("r2"));
+    let second = json(
+      await app.inject({ method: "POST", url: "/api/games/test-game/variants", payload: { name: "Second" } })
+    );
+    second = json(await patch(app, second.id, { set: { "components.cta.scale": 2 } }));
+    const started = await app.inject({
+      method: "POST",
+      url: "/api/games/test-game/export-jobs",
+      payload: {
+        variantIds: [v.id, second.id],
+        revisions: { [v.id]: v.revision, [second.id]: second.revision },
+        networks: ["default"],
+        langs: ["auto"]
+      }
+    });
+    assert.equal(started.statusCode, 202, started.body);
+    let job = json(started);
+    for (let i = 0; i < 100 && ["queued", "running"].includes(job.state); i++) {
+      await new Promise((r) => setTimeout(r, 20));
+      job = json(await app.inject(`/api/jobs/${job.id}`));
+    }
+    assert.equal(job.state, "done", job.error);
+    const res = await app.inject(`/api/jobs/${job.id}/download`);
+    assert.deepEqual(Object.keys(unzipSync(new Uint8Array(res.rawPayload))).sort(), ["r1.zip", "r2.zip"]);
+    assert.equal(fs.readdirSync(path.join(dataDir, "exports")).length, 2);
+  }));
+
+test("deleted variants and their history can be restored from trash", () =>
+  run(async (app) => {
+    const v = await setup(app);
+    const copy = json(
+      await app.inject({
+        method: "POST",
+        url: "/api/games/test-game/variants",
+        payload: { name: "Recover me", copyFrom: v.id }
+      })
+    );
+    await patch(app, copy.id, { set: { "components.cta.scale": 2 } });
+    const history = json(await app.inject(`/api/variants/${copy.id}/revisions`));
+    assert.equal((await app.inject({ method: "DELETE", url: `/api/variants/${copy.id}` })).statusCode, 204);
+    assert.equal(json(await app.inject("/api/games/test-game")).variants.length, 1);
+    assert.equal(json(await app.inject("/api/games/test-game/trash"))[0].id, copy.id);
+    const restored = await app.inject({ method: "POST", url: `/api/games/test-game/trash/${copy.id}/restore` });
+    assert.equal(restored.statusCode, 200);
+    assert.equal(json(restored).overrides["components.cta.scale"], 2);
+    assert.deepEqual(json(await app.inject(`/api/variants/${copy.id}/revisions`)), history);
+  }));
+
+test("backup restores the database and original export artifacts together", () =>
+  run(
+    async (app, dataDir) => {
+      const v = await setup(app);
+      const out = await app.inject({
+        method: "POST",
+        url: `/api/variants/${v.id}/export`,
+        payload: { revision: v.revision, networks: ["default"], langs: ["auto"] }
+      });
+      assert.equal(out.statusCode, 200, out.body);
+      const exportId = Number(out.headers["x-export-id"]);
+      const backup = json(await app.inject({ method: "POST", url: "/api/maintenance/backup" }));
+      const restoredDir = fs.mkdtempSync(path.join(os.tmpdir(), "studio-restored-"));
+      let restored;
+      try {
+        fs.copyFileSync(backup.file, path.join(restoredDir, "studio.db"));
+        for (const dir of ["releases", "assets", "exports"])
+          fs.cpSync(path.join(`${dataDir}-backup`, dir), path.join(restoredDir, dir), { recursive: true });
+        restored = await buildApp({ dataDir: restoredDir, auth: false });
+        const download = await restored.inject(`/api/exports/${exportId}/download`);
+        assert.equal(download.statusCode, 200);
+        assert.deepEqual(download.rawPayload, out.rawPayload);
+        assert.equal(json(await restored.inject("/api/games/test-game")).variants[0].id, v.id);
+      } finally {
+        if (restored) await restored.close();
+        fs.rmSync(restoredDir, { recursive: true, force: true });
+      }
+    },
+    (dataDir) => ({ backup: { dir: `${dataDir}-backup`, keep: 3 } })
+  ));
+
+test("recipe API saves reusable recipes, previews and atomically creates pinned drafts; retries do not duplicate", () =>
+  run(async (app) => {
+    const v = await setup(app);
+    const game = json(await app.inject("/api/games/test-game"));
+    const releaseId = game.releases[0].id;
+    const body = {
+      baseVariantId: v.id,
+      baseRevision: v.revision,
+      releaseId,
+      recipe: {
+        name: "CTA test",
+        axes: [
+          { path: "components.cta.scale", values: [1, 2] },
+          { path: "components.cta.color", values: ["#ff0000", "#00ff00"] }
+        ]
+      }
+    };
+    const post = (action, payload = body) =>
+      app.inject({ method: "POST", url: `/api/games/test-game/recipes${action ? "/" + action : ""}`, payload });
+    assert.equal((await post("")).statusCode, 200);
+    assert.equal(json(await app.inject("/api/games/test-game/recipes")).length, 1);
+    assert.equal(json(await post("preview")).length, 4);
+    const payload = { ...body, requestId: "recipe-test-request-0001" };
+    const generated = await post("generate", payload);
+    assert.equal(generated.statusCode, 200, generated.body);
+    const result = json(generated);
+    assert.equal(result.variantIds.length, 4);
+    const variants = json(await app.inject("/api/games/test-game")).variants;
+    for (const child of variants.filter((x) => result.variantIds.includes(x.id))) {
+      assert.equal(child.status, "draft");
+      assert.equal(child.pinnedReleaseId, releaseId);
+      assert.equal(child.recipeOrigin.baseRevision, v.revision);
+      assert.equal(child.recipeOrigin.baseVariantId, v.id);
+    }
+    await patch(app, v.id, { set: { "components.cta.scale": 1.5 } });
+    assert.deepEqual(json(await post("generate", payload)).variantIds, result.variantIds);
+    assert.equal(json(await app.inject("/api/games/test-game")).variants.length, 5);
+    assert.equal((await post("generate", { ...payload, requestId: "recipe-test-request-0002" })).statusCode, 409);
+    assert.equal((await post("generate", { ...payload, recipe: { ...body.recipe, name: "Changed" } })).statusCode, 409);
+    const invalid = await post("generate", {
+      ...payload,
+      baseRevision: 2,
+      requestId: "recipe-test-request-0003",
+      recipe: { name: "Bad", axes: [{ path: "components.cta.scale", values: [1, 999] }] }
+    });
+    assert.equal(invalid.statusCode, 400, invalid.body);
+    assert.equal(json(await app.inject("/api/games/test-game")).variants.length, 5);
+  }));

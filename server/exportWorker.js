@@ -8,9 +8,10 @@
 //   estimate  { releaseFile, overrides, uploads } → sizes per network
 // Replies { id, progress } while working and { id, result } or { id, error } at the end.
 import fs from "node:fs";
+import path from "node:path";
 import crypto from "node:crypto";
 import { parentPort } from "node:worker_threads";
-import { zipSync, strToU8 } from "fflate";
+import { Zip, ZipPassThrough, strToU8 } from "fflate";
 import { prepareRelease } from "../shared/playable/export/patch.js";
 import { estimateSizes, exportBatch, slug } from "./exporter.js";
 
@@ -26,8 +27,59 @@ function prepared(file) {
 const sha256 = (data) => crypto.createHash("sha256").update(data).digest("hex");
 const warningsOf = (report) => [...new Set(report.exports.flatMap((e) => e.warnings))];
 
+function archive(dir, data) {
+  const hash = sha256(data);
+  const file = path.join(dir, hash);
+  if (!fs.existsSync(file)) {
+    const part = `${file}.${crypto.randomBytes(6).toString("hex")}.part`;
+    fs.writeFileSync(part, data);
+    fs.renameSync(part, file);
+  }
+  return hash;
+}
+// Stream stored ZIP members to disk; the full batch is never retained in memory.
+function zipWriter(file) {
+  const part = file + ".part";
+  const fd = fs.openSync(part, "w");
+  const zip = new Zip((error, chunk) => {
+    if (error) throw error;
+    fs.writeSync(fd, chunk);
+  });
+  return {
+    add(name, bytes) {
+      const entry = new ZipPassThrough(name);
+      entry.mtime = new Date(1980, 0, 1);
+      zip.add(entry);
+      entry.push(bytes, true);
+    },
+    addFile(name, file) {
+      const entry = new ZipPassThrough(name);
+      entry.mtime = new Date(1980, 0, 1);
+      zip.add(entry);
+      const input = fs.openSync(file, "r");
+      const buffer = Buffer.alloc(1024 * 1024);
+      try {
+        let n;
+        while ((n = fs.readSync(input, buffer)) > 0) entry.push(buffer.subarray(0, n), false);
+        entry.push(new Uint8Array(), true);
+      } finally {
+        fs.closeSync(input);
+      }
+    },
+    end() {
+      zip.end();
+      fs.closeSync(fd);
+      fs.renameSync(part, file);
+    },
+    abort() {
+      fs.closeSync(fd);
+      fs.rmSync(part, { force: true });
+    }
+  };
+}
+
 const tasks = {
-  export({ releaseFile, release, variant, uploads, networks, langs, createdAt }) {
+  export({ releaseFile, release, variant, uploads, networks, langs, createdAt, exportsDir }) {
     const rel = prepared(releaseFile);
     const out = exportBatch({
       prepared: rel,
@@ -43,63 +95,79 @@ const tasks = {
       data: out.data,
       fileName: out.fileName,
       mime: out.mime,
-      sha256: sha256(out.data),
+      sha256: exportsDir ? archive(exportsDir, out.data) : sha256(out.data),
       warnings: warningsOf(out.report)
     };
   },
 
-  bulk({ releaseFile, release, items, networks, langs, createdAt, zipFile }, progress) {
+  bulk({ releaseFile, release, items, networks, langs, createdAt, zipFile, exportsDir }, progress) {
     const rel = prepared(releaseFile);
-    const entries = Object.create(null);
-    const mtime = new Date(1980, 0, 1);
-    const results = [];
-    const folders = new Set();
-    items.forEach(({ variant, uploads }, i) => {
-      try {
-        const out = exportBatch({
-          prepared: rel,
-          manifest: rel.manifest,
-          release,
-          variant,
-          uploads,
-          networks,
-          langs,
-          createdAt
-        });
-        let folder = slug(variant.name);
-        while (folders.has(folder)) folder += "_";
-        folders.add(folder);
-        for (const o of out.outputs)
-          entries[`${folder}/${o.name}`] = [typeof o.data === "string" ? strToU8(o.data) : o.data, { mtime, level: 0 }];
-        results.push({
-          variantId: variant.id,
-          fileName: out.fileName,
-          size: out.data.length,
-          sha256: sha256(out.data),
-          warnings: warningsOf(out.report)
-        });
-      } catch (e) {
-        results.push({ variantId: variant.id, error: e.message });
-      }
-      progress({ done: i + 1, total: items.length });
-    });
-    const ok = results.filter((r) => !r.error);
-    if (!ok.length) throw new Error(results.map((r) => r.error).join("\n"));
-    const summary = results.map((r) => ({
-      variantId: r.variantId,
-      file: r.fileName,
-      error: r.error,
-      warnings: r.warnings
-    }));
-    entries["export-summary.json"] = [
-      strToU8(
-        JSON.stringify({ createdAt, release: release.number, networks, langs, variants: summary }, null, 2) + "\n"
-      ),
-      { mtime }
-    ];
-    const zip = zipSync(entries, { level: 6 });
-    fs.writeFileSync(zipFile, zip);
-    return { size: zip.length, results };
+    const writer = zipWriter(zipFile);
+    try {
+      const results = [];
+      const folders = new Set();
+      items.forEach(({ variant, uploads }, i) => {
+        try {
+          const out = exportBatch({
+            prepared: rel,
+            manifest: rel.manifest,
+            release,
+            variant,
+            uploads,
+            networks,
+            langs,
+            createdAt
+          });
+          let folder = slug(variant.name);
+          while (folders.has(folder)) folder += "_";
+          folders.add(folder);
+          for (const o of out.outputs)
+            writer.add(`${folder}/${o.name}`, typeof o.data === "string" ? strToU8(o.data) : o.data);
+          results.push({
+            variantId: variant.id,
+            fileName: out.fileName,
+            size: out.data.length,
+            sha256: exportsDir ? archive(exportsDir, out.data) : sha256(out.data),
+            warnings: warningsOf(out.report)
+          });
+        } catch (e) {
+          results.push({ variantId: variant.id, error: e.message });
+        }
+        progress({ done: i + 1, total: items.length });
+      });
+      const ok = results.filter((r) => !r.error);
+      if (!ok.length) throw new Error(results.map((r) => r.error).join("\n"));
+      const summary = results.map((r) => ({
+        variantId: r.variantId,
+        file: r.fileName,
+        error: r.error,
+        warnings: r.warnings
+      }));
+      writer.add(
+        "export-summary.json",
+        strToU8(
+          JSON.stringify({ createdAt, release: release.number, networks, langs, variants: summary }, null, 2) + "\n"
+        )
+      );
+      writer.end();
+      return { size: fs.statSync(zipFile).size, results };
+    } catch (error) {
+      writer.abort();
+      throw error;
+    }
+  },
+
+  combine({ parts, zipFile }) {
+    const writer = zipWriter(zipFile);
+    try {
+      for (const { rel, partFile } of parts) writer.addFile(`r${rel.number}.zip`, partFile);
+      writer.end();
+      for (const { partFile } of parts) fs.rmSync(partFile, { force: true });
+      return { size: fs.statSync(zipFile).size };
+    } catch (error) {
+      writer.abort();
+      throw error;
+    }
   },
 
   estimate({ releaseFile, overrides, uploads }) {

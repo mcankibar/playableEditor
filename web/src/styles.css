@@ -1193,3 +1193,98 @@ label.stack select {
 .storage h3 {
   margin: 0 0 6px;
 }
+
+/* Experiments: saved snapshots stay fixed while the main editor keeps polling. */
+.compare-dialog {
+  width: min(96vw, 1600px);
+  max-width: none;
+  max-height: 94vh;
+  overflow: auto;
+}
+.experiment-toolbar {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin: 8px 0;
+}
+.experiment-toolbar h2 {
+  margin: 0;
+}
+.compare-grid {
+  display: grid;
+  gap: 12px;
+  overflow-x: auto;
+  margin-top: 16px;
+}
+.compare-grid h3 {
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+.compare-grid .preview {
+  height: 440px;
+  min-width: 0;
+}
+.compare-grid .stage {
+  min-height: 0;
+}
+.experiment-table {
+  overflow: auto;
+}
+.experiment-table table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.experiment-table td,
+.experiment-table th {
+  padding: 8px;
+  text-align: left;
+  border-bottom: 1px solid #444;
+  max-width: 300px;
+  overflow-wrap: anywhere;
+}
+.recipes-dialog {
+  max-height: 92vh;
+  overflow: auto;
+}
+.recipes-dialog fieldset {
+  border: 0;
+  padding: 0;
+  min-width: 0;
+  display: grid;
+  gap: 12px;
+}
+.recipes-dialog label {
+  display: grid;
+  gap: 5px;
+}
+.recipe-axis {
+  display: grid;
+  grid-template-columns: minmax(150px, 1fr) minmax(180px, 2fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+.recipes-dialog textarea {
+  width: 100%;
+  min-height: 54px;
+}
+.recipe-results {
+  max-height: 260px;
+  overflow: auto;
+  margin-bottom: 12px;
+}
+.recipe-results > div {
+  display: grid;
+  gap: 5px;
+  padding: 8px;
+  border-bottom: 1px solid #444;
+}
+.recipe-results code {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 650px) {
+  .recipe-axis {
+    grid-template-columns: 1fr;
+  }
+}

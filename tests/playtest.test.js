@@ -29,8 +29,8 @@ test("aggregate counts outcomes and averages", () => {
   ]);
   assert.equal(stats.runs, 5);
   assert.equal(stats.wins, 2);
-  assert.equal(stats.winRate, 40);
-  assert.equal(stats.label, "Hard");
+  assert.equal(stats.winRate, 67);
+  assert.equal(stats.label, "Medium");
   assert.equal(stats.avgMovesLeft, 2.5);
   assert.equal(stats.avgSteps, 11.3);
   assert.deepEqual(stats.outcomes, { won: 2, lost: 1, stuck: 0, timeout: 0, error: 2 });
@@ -57,12 +57,14 @@ test("summary keeps the first 5 distinct errors", () => {
   assert.equal(summary.releaseId, 3);
   assert.equal(summary.revision, 9);
   assert.equal(summary.runs, 7);
-  assert.equal(summary.label, "Very hard");
+  assert.equal(summary.label, null);
   assert.deepEqual(countErrors([{ errors: ["a"] }, { errors: ["a"] }]), [{ message: "a", count: 2 }]);
 });
 
 test("release check status", () => {
-  assert.deepEqual(checkStatus({ outcome: "timeout", errors: [] }), { check: "ok" });
+  assert.equal(checkStatus({ outcome: "timeout", steps: 0, errors: [] }).check, "error");
+  assert.equal(checkStatus({ outcome: "stuck", errors: [] }).check, "error");
+  assert.deepEqual(checkStatus({ outcome: "checked", steps: 6, errors: [] }), { check: "ok" });
   assert.deepEqual(checkStatus({ outcome: "won", errors: [] }), { check: "ok" });
   assert.deepEqual(checkStatus({ outcome: "error", errors: ["x"] }), { check: "error", error: "x" });
   assert.deepEqual(checkStatus({ outcome: "timeout", errors: ["late"] }), { check: "error", error: "late" });

@@ -5,6 +5,8 @@ import { gameHash, navigate } from "../App.jsx";
 import { ReleaseDrop } from "./GameList.jsx";
 import { useVariantSync } from "./useVariantSync.js";
 import { FieldPanel } from "../components/FieldPanel.jsx";
+import { CompareDialog } from "../components/CompareDialog.jsx";
+import { RecipesDialog } from "../components/RecipesDialog.jsx";
 import { Preview } from "../components/Preview.jsx";
 import { ExportDialog } from "../components/ExportDialog.jsx";
 import { VariantList } from "../components/VariantList.jsx";
@@ -50,17 +52,24 @@ export function GameEditor({ gameId, variantId }) {
   const variant = data && (data.variants.find((v) => v.id === variantId) ?? data.variants[0]);
   const latest = data?.releases[0];
 
-  // A variant opens on its pinned release, otherwise the latest (also when a new release arrives).
+  // Keep variants on their saved release; promotion to a newer build is explicit.
   useEffect(() => {
     if (!data || !variant) return;
-    setReleaseId(variant.pinnedReleaseId ?? latest?.id ?? null);
+    setReleaseId(variant.pinnedReleaseId ?? variant.baseReleaseId ?? latest?.id ?? null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [variant?.id, variant?.pinnedReleaseId, latest?.id]);
+  }, [variant?.id, variant?.pinnedReleaseId, variant?.baseReleaseId, latest?.id]);
 
   useEffect(() => {
     if (!releaseId) return;
     setManifest(null);
-    api.manifest(releaseId).then(setManifest, (e) => setError(e.message));
+    let alive = true;
+    api.manifest(releaseId).then(
+      (m) => alive && setManifest(m),
+      (e) => alive && setError(e.message)
+    );
+    return () => {
+      alive = false;
+    };
   }, [releaseId]);
 
   const replaceVariant = useCallback(
@@ -174,20 +183,41 @@ export function GameEditor({ gameId, variantId }) {
     return sync.revision;
   };
   // Other variants' uploaded files are fetched first; the open one uses what is on screen.
-  const openPlaytest = async (list) => {
+  const openPlaytest = async (list, testReleaseId = releaseId) => {
     try {
+      await sync.flush();
       const variants = await Promise.all(
-        list.map(async (v) =>
-          v.id === variant.id
-            ? { ...v, overrides: check.values, uploads: previewAssets, revision: sync.revision }
-            : { ...v, uploads: await api.variantUploads(v.id) }
-        )
+        list.map((v) => api.playtestSnapshot(v.id, testReleaseId, v.id === variant.id ? sync.revision : v.revision))
       );
-      setDialog({ type: "playtest", variants });
+      setDialog({ type: "playtest", variants, releaseId: testReleaseId });
     } catch (e) {
       setError(e.message);
     }
   };
+
+  async function openCompare(ids) {
+    try {
+      await sync.flush();
+      const snapshots = await Promise.all(
+        ids.map((id) => {
+          const v = data.variants.find((v) => v.id === id);
+          return api.playtestSnapshot(id, releaseId, id === variant.id ? sync.revision : v.revision);
+        })
+      );
+      setDialog({ type: "compare", variants: snapshots, release, manifest });
+    } catch (e) {
+      setError(e.message);
+    }
+  }
+  async function openRecipes() {
+    try {
+      await sync.flush();
+      const snapshot = await api.playtestSnapshot(variant.id, releaseId, sync.revision);
+      setDialog({ type: "recipes", variant: snapshot, release, manifest });
+    } catch (e) {
+      setError(e.message);
+    }
+  }
 
   return (
     <div className="page editor">
@@ -249,6 +279,9 @@ export function GameEditor({ gameId, variantId }) {
         >
           Export…
         </button>
+        <button disabled={!manifest} onClick={openRecipes}>
+          Recipes
+        </button>
         <UserMenu />
       </header>
 
@@ -260,6 +293,12 @@ export function GameEditor({ gameId, variantId }) {
           </button>
         </div>
       )}
+      {variant.recipeOrigin && (
+        <div className="banner info">
+          Recipe: {variant.recipeOrigin.recipe.name} · source variant #{variant.recipeOrigin.baseVariantId}, revision{" "}
+          {variant.recipeOrigin.baseRevision} · created by {variant.recipeOrigin.user}
+        </div>
+      )}
       <ReleaseBanner
         variant={variant}
         latest={latest}
@@ -267,9 +306,11 @@ export function GameEditor({ gameId, variantId }) {
         fields={fields}
         releaseId={releaseId}
         orphans={check.orphans}
-        onPlaytest={() => openPlaytest([variant])}
+        onPlaytest={() => openPlaytest([variant], latest.id)}
         onChecked={() =>
-          api.patchVariant(variant.id, { baseReleaseId: latest.id }).then(replaceVariant, (e) => setError(e.message))
+          api
+            .patchVariant(variant.id, { baseRevision: variant.revision, baseReleaseId: latest.id })
+            .then(replaceVariant, (e) => setError(e.message))
         }
       />
 
@@ -282,6 +323,7 @@ export function GameEditor({ gameId, variantId }) {
           overrides={overrides}
           uploads={uploads}
           latestReleaseId={latest?.id}
+          onCompare={openCompare}
           onSelect={(id) => navigate(gameHash(gameId, id))}
           onChanged={async (selectId) => {
             await load();
@@ -316,7 +358,7 @@ export function GameEditor({ gameId, variantId }) {
             fields={fields}
             onRestore={async (revision) => {
               await sync.flush();
-              const saved = await api.restore(variant.id, revision);
+              const saved = await api.restore(variant.id, revision, sync.revision);
               replaceVariant(saved);
               sync.applyRemote(saved);
             }}
@@ -347,6 +389,26 @@ export function GameEditor({ gameId, variantId }) {
         )}
       </div>
 
+      {dialog?.type === "compare" && (
+        <CompareDialog
+          variants={dialog.variants}
+          release={dialog.release}
+          manifest={dialog.manifest}
+          onClose={() => setDialog(null)}
+        />
+      )}
+      {dialog?.type === "recipes" && (
+        <RecipesDialog
+          gameId={gameId}
+          variant={dialog.variant}
+          release={dialog.release}
+          manifest={dialog.manifest}
+          onClose={() => setDialog(null)}
+          onCreated={async () => {
+            await load();
+          }}
+        />
+      )}
       {sync.conflict && <ConflictDialog conflict={sync.conflict} fields={fields} onResolve={sync.resolve} />}
 
       {dialog?.type === "export" && (
@@ -383,12 +445,13 @@ export function GameEditor({ gameId, variantId }) {
       )}
       {dialog?.type === "playtest" && release && (
         <Playtest
-          releaseId={releaseId}
-          release={release}
+          releaseId={dialog.releaseId}
+          release={data.releases.find((r) => r.id === dialog.releaseId)}
           variants={dialog.variants.map((v) => ({
             id: v.id,
             name: v.name,
             revision: v.revision,
+            snapshotHash: v.snapshotHash,
             overrides: v.overrides,
             uploads: v.uploads
           }))}
@@ -396,11 +459,6 @@ export function GameEditor({ gameId, variantId }) {
           onResult={async (id, result) => {
             try {
               replaceVariant(await api.savePlaytest(id, result));
-              // A clean run on the latest release counts as checked.
-              const v = data.variants.find((x) => x.id === id);
-              const ok = result.check ? result.check === "ok" : !result.errors?.length;
-              if (ok && result.releaseId === latest?.id && v && v.baseReleaseId !== latest.id)
-                replaceVariant(await api.patchVariant(id, { baseReleaseId: latest.id }));
             } catch (e) {
               setError(e.message);
             }
@@ -430,7 +488,12 @@ function ReleaseBanner({ variant, latest, releases, releaseId, orphans, onPlayte
       <button className="small" onClick={onPlaytest}>
         Playtest
       </button>
-      <button className="small" onClick={onChecked}>
+      <button
+        className="small"
+        disabled={releaseId !== latest.id}
+        onClick={onChecked}
+        title="Preview the latest release before marking it checked"
+      >
         Mark as checked
       </button>
     </div>
