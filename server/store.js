@@ -1,4 +1,5 @@
-// Files on disk: data/releases/<id>.html and data/assets/<sha256> (content-addressed).
+// Files on disk: data/releases/<id>.html, data/assets/<sha256> (content-addressed) and
+// data/tmp/ (finished export jobs, removed after a day).
 import fs from "node:fs";
 import path from "node:path";
 import { prepareRelease } from "../shared/playable/export/patch.js";
@@ -6,9 +7,11 @@ import { prepareRelease } from "../shared/playable/export/patch.js";
 export function openStore(dataDir) {
   const releasesDir = path.join(dataDir, "releases");
   const assetsDir = path.join(dataDir, "assets");
+  const tmpDir = path.join(dataDir, "tmp");
   // Also creates dataDir itself, where the database lives.
   fs.mkdirSync(releasesDir, { recursive: true });
   fs.mkdirSync(assetsDir, { recursive: true });
+  fs.mkdirSync(tmpDir, { recursive: true });
 
   // Parsed releases are large (all assets as base64); keep only the few being edited.
   const cache = new Map();
@@ -17,6 +20,11 @@ export function openStore(dataDir) {
   const releaseFile = (id) => path.join(releasesDir, `${Number(id)}.html`);
 
   return {
+    releasesDir,
+    assetsDir,
+    tmpDir,
+    releaseFile,
+
     writeRelease(id, html) {
       fs.writeFileSync(releaseFile(id), html);
     },
@@ -38,6 +46,39 @@ export function openStore(dataDir) {
       cache.set(id, entry);
       if (cache.size > CACHE_SIZE) cache.delete(cache.keys().next().value);
       return entry;
+    },
+
+    deleteRelease(id) {
+      cache.delete(id);
+      fs.rmSync(releaseFile(id), { force: true });
+    },
+
+    /** Deletes release files without a database row and asset files not in `keep`; returns the count. */
+    removeUnused({ releaseIds, keep }) {
+      let removed = 0;
+      for (const file of fs.readdirSync(releasesDir)) {
+        const id = Number.parseInt(file, 10);
+        if (!releaseIds.has(id)) {
+          fs.rmSync(path.join(releasesDir, file), { force: true });
+          cache.delete(id);
+          removed++;
+        }
+      }
+      for (const file of fs.readdirSync(assetsDir)) {
+        if (!keep.has(file)) {
+          fs.rmSync(path.join(assetsDir, file), { force: true });
+          removed++;
+        }
+      }
+      return removed;
+    },
+
+    /** Removes temporary files older than maxAgeMs. */
+    cleanTmp(maxAgeMs = 24 * 3600 * 1000) {
+      for (const file of fs.readdirSync(tmpDir)) {
+        const full = path.join(tmpDir, file);
+        if (Date.now() - fs.statSync(full).mtimeMs > maxAgeMs) fs.rmSync(full, { force: true });
+      }
     },
 
     writeAsset(sha256, bytes) {

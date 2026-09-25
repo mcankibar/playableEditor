@@ -1,7 +1,7 @@
 // Batch export: one variant × networks × languages → a single file, or a ZIP with a report.json.
 // Output names match the template's `npm run export` CLI.
-import { zipSync, strToU8 } from "fflate";
-import { packageVariant } from "../shared/playable/export/patch.js";
+import { zipSync, strToU8, deflateSync } from "fflate";
+import { exportVariant, packageVariant } from "../shared/playable/export/patch.js";
 import { EXPORT_NETWORKS } from "../shared/playable/export/networks.js";
 
 // ASCII only (file names, Content-Disposition); "Kırmızı CTA" → "Kirmizi-CTA".
@@ -16,9 +16,10 @@ export const slug = (s) =>
 /**
  * @param release  prepareRelease(html), cached per release so its assets are parsed and checked once
  * @param uploads  { assetId: { mime, base64 } } for the uploaded files the variant uses
- * @returns {{ fileName, mime, data: Uint8Array, report }}
+ * @param createdAt  written to report.json; the same inputs and createdAt give the same bytes
+ * @returns {{ fileName, mime, data: Uint8Array, report, outputs: [{ name, data }] }}
  */
-export function exportBatch({ prepared, manifest, release, variant, uploads, networks, langs }) {
+export function exportBatch({ prepared, manifest, release, variant, uploads, networks, langs, createdAt }) {
   if (!networks.length || !langs.length) throw new Error("Pick at least one network and one language");
   for (const n of networks) if (!Object.hasOwn(EXPORT_NETWORKS, n)) throw new Error(`Unknown network: ${n}`);
 
@@ -47,7 +48,7 @@ export function exportBatch({ prepared, manifest, release, variant, uploads, net
     release: release.number,
     releaseId: manifest.releaseId ?? null,
     variant: variant.name,
-    createdAt: new Date().toISOString(),
+    createdAt: createdAt ?? new Date().toISOString(),
     exports: outputs.map(({ name, packed: { report: r } }) => ({
       path: name,
       network: r.network,
@@ -66,7 +67,8 @@ export function exportBatch({ prepared, manifest, release, variant, uploads, net
       fileName: name,
       mime: packed.extension === "zip" ? "application/zip" : "text/html; charset=utf-8",
       data: packed.data,
-      report
+      report,
+      outputs: [{ name, data: packed.data }]
     };
   }
 
@@ -78,6 +80,31 @@ export function exportBatch({ prepared, manifest, release, variant, uploads, net
     fileName: `${slug(manifest.game.id)}_${slug(variant.name)}_r${release.number}.zip`,
     mime: "application/zip",
     data: zipSync(entries, { level: 6 }),
-    report
+    report,
+    outputs: outputs
+      .map(({ name, packed }) => ({ name, data: packed.data }))
+      .concat({
+        name: "report.json",
+        data: entries["report.json"][0]
+      })
   };
+}
+
+/**
+ * Package size per network for the editor's size meter. HTML networks are exact; ZIP networks are
+ * estimated with fast compression (a little larger than the real, level 9 package).
+ * @returns {{ [network]: { bytes, maxBytes, approx } }}
+ */
+export function estimateSizes(prepared, { overrides, uploads }) {
+  const out = {};
+  for (const [network, net] of Object.entries(EXPORT_NETWORKS)) {
+    const { files } = exportVariant(prepared, { overrides, uploads, network });
+    let bytes = 0;
+    for (const f of files) {
+      const data = typeof f.data === "string" ? strToU8(f.data) : f.data;
+      bytes += net.container === "zip" ? deflateSync(data, { level: 1 }).length + 76 + 2 * f.name.length : data.length;
+    }
+    out[network] = { bytes, maxBytes: net.maxMb * 1024 * 1024, approx: net.container === "zip" };
+  }
+  return out;
 }

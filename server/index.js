@@ -17,7 +17,15 @@ const app = await buildApp({
   trustProxy: process.env.STUDIO_TRUST_PROXY === "1",
   admin: { username: process.env.STUDIO_ADMIN_USER, password: process.env.STUDIO_ADMIN_PASSWORD },
   // Sign-in is off for `npm run dev` (local testing) and on for `npm start`, unless STUDIO_AUTH says otherwise.
-  auth: (process.env.STUDIO_AUTH ?? (production ? "1" : "0")) === "1"
+  auth: (process.env.STUDIO_AUTH ?? (production ? "1" : "0")) === "1",
+  // Daily backups (./backup.js); put STUDIO_BACKUP_DIR on another disk. STUDIO_BACKUP=0 turns them off.
+  backup:
+    process.env.STUDIO_BACKUP === "0"
+      ? null
+      : {
+          dir: path.resolve(root, process.env.STUDIO_BACKUP_DIR || path.join(dataDir, "..", "backups")),
+          keep: Number(process.env.STUDIO_BACKUP_KEEP || 14)
+        }
 });
 
 if (production) {
