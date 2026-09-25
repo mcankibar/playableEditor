@@ -1,0 +1,204 @@
+/* ── playtest dialog (Playtest.jsx) ─────────────────────── */
+.modal.playtest {
+  width: min(780px, 100%);
+}
+.pt-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+}
+.pt-tabs button {
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: none;
+  padding: 6px 10px;
+  color: var(--muted);
+}
+.pt-tabs button.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+  font-weight: 600;
+}
+.pt-body {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+}
+.pt-main {
+  flex: 1;
+  min-width: 0;
+}
+.pt-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+}
+.pt-hint {
+  margin: 0;
+}
+.pt-progress {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.pt-bar {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--accent-soft);
+  overflow: hidden;
+}
+.pt-bar span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.3s;
+}
+.banner.pt-notice {
+  margin-top: 12px;
+  border: 0;
+  border-radius: var(--radius);
+}
+.pt-stats {
+  margin-top: 14px;
+}
+.pt-headline {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.pt-rate {
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--accent);
+}
+.pt-label.easy {
+  color: var(--ok);
+}
+.pt-label.medium {
+  color: var(--changed);
+}
+.pt-label.hard,
+.pt-label.very-hard {
+  color: var(--danger);
+}
+.pt-facts {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px 12px;
+  margin: 8px 0;
+}
+.pt-facts dt {
+  color: var(--muted);
+}
+.pt-facts dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+.pt-outcomes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.pt-chip {
+  padding: 1px 8px;
+  border-radius: 10px;
+  font-size: 12px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+}
+.pt-chip.won {
+  color: var(--ok);
+}
+.pt-chip.lost,
+.pt-chip.error {
+  color: var(--danger);
+}
+.pt-chip.zero {
+  opacity: 0.5;
+}
+.pt-errors {
+  margin: 0;
+  padding-left: 18px;
+}
+.pt-errors .mono {
+  word-break: break-word;
+}
+.pt-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 12px;
+}
+.pt-table th,
+.pt-table td {
+  text-align: left;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+.pt-table th {
+  font-weight: 600;
+  color: var(--muted);
+  font-size: 12px;
+}
+.pt-table .num {
+  text-align: right;
+  white-space: nowrap;
+}
+.pt-ok {
+  color: var(--ok);
+  font-weight: 600;
+}
+.pt-summary {
+  margin: 10px 0 0;
+}
+.pt-log {
+  margin: 12px 0 0;
+  max-height: 140px;
+  overflow: auto;
+  padding: 8px 10px;
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 11.5px;
+  white-space: pre-wrap;
+}
+.pt-watch {
+  flex: none;
+}
+.pt-screen {
+  position: relative;
+  overflow: hidden;
+  border-radius: 10px;
+  background: var(--stage);
+  border: 1px solid var(--line);
+}
+.pt-screen iframe {
+  position: absolute;
+  top: 0;
+  left: 0;
+  border: 0;
+  transform-origin: 0 0;
+  pointer-events: none;
+  background: #000;
+}
+/* Not display:none: the game must keep rendering (requestAnimationFrame) while hidden. */
+.pt-watch.hidden {
+  position: fixed;
+  right: 0;
+  bottom: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+@media (max-width: 600px) {
+  .pt-body {
+    flex-direction: column-reverse;
+    align-items: center;
+  }
+  .pt-main {
+    width: 100%;
+  }
+}

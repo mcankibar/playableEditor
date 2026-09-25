@@ -1,0 +1,162 @@
+/* ── board (level layout) editor ───────────────────────── */
+.board-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.board-levels,
+.board-size,
+.board-random,
+.board-random-colors {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+}
+.board-levels button.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
+.board-size {
+  gap: 12px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.board-size-input {
+  width: 56px;
+}
+.board-grid {
+  display: grid;
+  gap: 2px;
+  width: 100%;
+  max-width: 340px;
+  padding: 4px;
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  background: var(--stage);
+  touch-action: none;
+  user-select: none;
+  cursor: crosshair;
+}
+.board-cell {
+  position: relative;
+  aspect-ratio: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 3px;
+  background: var(--panel);
+  overflow: hidden;
+}
+.board-cell.unknown {
+  background: var(--panel-2);
+  outline: 1px dashed var(--muted);
+  outline-offset: -1px;
+}
+.board-cell.missing {
+  background: none;
+}
+.board-cell.matched {
+  outline: 2px solid var(--danger);
+  outline-offset: -2px;
+  z-index: 1;
+}
+.board-cell > .board-swatch {
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+.board-swatch {
+  display: block;
+  object-fit: contain;
+  border-radius: 3px;
+}
+.board-swatch.text {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9.5px;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--text);
+  overflow: hidden;
+  white-space: nowrap;
+  text-shadow: 0 0 2px #fff;
+}
+.board-swatch.mini {
+  width: 18px;
+  height: 18px;
+  border: 1px solid var(--line);
+}
+.board-status {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.board-palette {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.board-palette-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 3px;
+}
+.board-tools {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(64px, 1fr));
+  gap: 4px;
+}
+button.board-tool {
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px;
+  min-width: 0;
+}
+button.board-tool .board-swatch {
+  width: 32px;
+  height: 32px;
+}
+button.board-tool.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+.board-tool-label {
+  font-size: 11px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.board-mode {
+  display: inline-flex;
+  align-self: flex-start;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.board-mode button {
+  border: 0;
+  border-radius: 0;
+}
+.board-legend {
+  line-height: 1.6;
+}
+.board-text {
+  width: 100%;
+  resize: vertical;
+  padding: 6px 7px;
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--text);
+  white-space: pre;
+  overflow-x: auto;
+}
