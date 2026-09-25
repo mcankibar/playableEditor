@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { GameList } from "./pages/GameList.jsx";
 import { GameEditor } from "./pages/GameEditor.jsx";
+import { AuthContext, Login } from "./auth.jsx";
+import { UNAUTHORIZED_EVENT, api } from "./api.js";
 
 // Routes: #/  ·  #/g/<gameId>  ·  #/g/<gameId>/v/<variantId>
 function parseHash() {
@@ -16,15 +18,33 @@ export const gameHash = (gameId, variantId) => `#/g/${encodeURIComponent(gameId)
 
 export function App() {
   const [route, setRoute] = useState(parseHash);
+  // undefined: checking the session · null: signed out
+  const [user, setUser] = useState(undefined);
+
   useEffect(() => {
     const onHash = () => setRoute(parseHash());
+    const onUnauthorized = () => setUser(null);
     window.addEventListener("hashchange", onHash);
-    return () => window.removeEventListener("hashchange", onHash);
+    window.addEventListener(UNAUTHORIZED_EVENT, onUnauthorized);
+    api.me().then(setUser, () => setUser(null));
+    return () => {
+      window.removeEventListener("hashchange", onHash);
+      window.removeEventListener(UNAUTHORIZED_EVENT, onUnauthorized);
+    };
   }, []);
 
-  return route.page === "game" ? (
-    <GameEditor key={route.gameId} gameId={route.gameId} variantId={route.variantId} />
-  ) : (
-    <GameList />
+  if (user === undefined) return null;
+  // The route stays in the address bar, so after signing in the same page opens.
+  if (user === null) return <Login onSignedIn={setUser} />;
+
+  const signOut = () => api.logout().finally(() => setUser(null));
+  return (
+    <AuthContext.Provider value={{ user, signOut }}>
+      {route.page === "game" ? (
+        <GameEditor key={route.gameId} gameId={route.gameId} variantId={route.variantId} />
+      ) : (
+        <GameList />
+      )}
+    </AuthContext.Provider>
   );
 }

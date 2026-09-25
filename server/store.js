@@ -1,7 +1,7 @@
 // Files on disk: data/releases/<id>.html and data/assets/<sha256> (content-addressed).
 import fs from "node:fs";
 import path from "node:path";
-import { inspectRelease } from "../shared/playable/export/patch.js";
+import { prepareRelease } from "../shared/playable/export/patch.js";
 
 export function openStore(dataDir) {
   const releasesDir = path.join(dataDir, "releases");
@@ -25,7 +25,7 @@ export function openStore(dataDir) {
       return fs.readFileSync(releaseFile(id), "utf8");
     },
 
-    /** { html, manifest, assets: Map<id, { mime, base64 }> } */
+    /** prepareRelease(html): { html, manifest, assets: Map<id, { mime, base64 }>, … }; reused by every export. */
     release(id) {
       if (cache.has(id)) {
         const hit = cache.get(id);
@@ -34,7 +34,7 @@ export function openStore(dataDir) {
         return hit;
       }
       const html = this.readReleaseHtml(id);
-      const entry = { html, ...inspectRelease(html) };
+      const entry = prepareRelease(html);
       cache.set(id, entry);
       if (cache.size > CACHE_SIZE) cache.delete(cache.keys().next().value);
       return entry;

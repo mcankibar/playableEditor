@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api, assetUrl } from "../api.js";
 import { formatBytes } from "../format.js";
 import { ASSET_TYPES } from "../../../shared/playable/kit/fields.js";
@@ -25,11 +25,33 @@ const toHex = (v) => (typeof v === "number" ? "#" + v.toString(16).padStart(6, "
 const same = (field, a, b) =>
   JSON.stringify(normalizeValue(field, a).value) === JSON.stringify(normalizeValue(field, b).value);
 
+// Why a related component is listed next to the selected one (reasons come from the game runtime).
+const REASONS = {
+  parent: { label: "Part of", hint: "The selected part sits inside this one" },
+  contains: { label: "Inside", hint: "This sits inside the selected part" },
+  uses: { label: "Uses", hint: "The selected part uses this (for example its images or effects)" },
+  below: { label: "Behind", hint: "Also under the point you clicked" }
+};
+
+// Files of an atlas() / spine() asset are numbered slots ("assets.gems.0"); name them by role.
+const PARTS = {
+  atlas: ["image (PNG)", "frame data (JSON)"],
+  spine: ["texture (PNG)", "skeleton (JSON)", "atlas (text)"]
+};
+const fieldLabel = (f) => {
+  const m = f.loader && /\.([^.]+)\.(\d+)$/.exec(f.path);
+  const part = m && PARTS[f.loader]?.[Number(m[2])];
+  return part ? `${m[1]} ${f.loader} — ${part}` : f.label;
+};
+
+/** "components.<id>.…" → id: the game component a field belongs to (what the preview can outline). */
+export const componentOf = (path) => /^components\.([^.]+)\./.exec(path)?.[1] ?? null;
+
 function readBase64(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(reader.result.split(",")[1] ?? "");
-    reader.onerror = () => reject(new Error("Dosya okunamadı"));
+    reader.onerror = () => reject(new Error("Couldn't read the file"));
     reader.readAsDataURL(file);
   });
 }
@@ -44,7 +66,10 @@ export function FieldPanel({
   onAddLanguage,
   onChange,
   onUploaded,
-  onError
+  onError,
+  selection = null,
+  onClearFocus,
+  onHoverComponent
 }) {
   const [query, setQuery] = useState("");
   const [changedOnly, setChangedOnly] = useState(false);
@@ -54,7 +79,7 @@ export function FieldPanel({
 
   function set(field, value) {
     const result = normalizeValue(field, value);
-    if (result.error) return onError(`${field.label}: ${result.error}`);
+    if (result.error) return onError(`${fieldLabel(field)}: ${result.error}`);
     const next = { ...overrides };
     if (same(field, result.value, field.default)) delete next[field.path];
     else next[field.path] = result.value;
@@ -72,21 +97,34 @@ export function FieldPanel({
       onUploaded(asset.id, `data:${asset.mime};base64,${base64}`);
       set(field, asset.id);
     } catch (e) {
-      onError(`${field.label}: ${e.message}`);
+      onError(`${fieldLabel(field)}: ${e.message}`);
     }
   }
 
-  const groups = useMemo(() => {
-    const q = query.trim().toLowerCase();
+  const q = query.trim().toLowerCase();
+  const matches = (f) =>
+    (!changedOnly || f.path in overrides) && (!q || `${fieldLabel(f)} ${f.path} ${f.group}`.toLowerCase().includes(q));
+
+  /** [[groupName, fields]] of the given fields, in field order. */
+  const groupList = (list) => {
     const map = new Map();
-    for (const f of fields) {
-      if (changedOnly && !(f.path in overrides)) continue;
-      if (q && !`${f.label} ${f.path} ${f.group}`.toLowerCase().includes(q)) continue;
+    for (const f of list) {
+      if (!matches(f)) continue;
       if (!map.has(f.group)) map.set(f.group, []);
       map.get(f.group).push(f);
     }
     return [...map];
-  }, [fields, overrides, query, changedOnly]);
+  };
+
+  const byComponent = useMemo(() => {
+    const map = new Map();
+    for (const f of fields) {
+      const id = componentOf(f.path);
+      if (!map.has(id)) map.set(id, []);
+      map.get(id).push(f);
+    }
+    return map;
+  }, [fields]);
 
   const byPath = useMemo(() => new Map(fields.map((f) => [f.path, f])), [fields]);
   const disabled = (f) => {
@@ -94,7 +132,71 @@ export function FieldPanel({
     return !!flag && valueOf(flag) === false;
   };
   const changedCount = Object.keys(overrides).filter((p) => byPath.has(p)).length;
-  const expandAll = !!query.trim() || changedOnly;
+  const searching = !!q || changedOnly;
+
+  // Selection mode: what was clicked (its image fields), the selected part, then related parts.
+  const focus = selection?.componentId ?? null;
+  const focusLabel = focus && byComponent.get(focus)?.[0]?.group;
+  const clickedAssets = (selection?.assets ?? []).filter((a) => byPath.has(a.path) && matches(byPath.get(a.path)));
+  const frames = [...new Set(clickedAssets.map((a) => a.frame).filter(Boolean))];
+  const selectedGroups = focus ? groupList(byComponent.get(focus) ?? []) : [];
+  const relatedGroups = focus
+    ? (selection.related ?? []).flatMap(({ componentId, reason }) =>
+        groupList(byComponent.get(componentId) ?? []).map(([name, list]) => [name, list, reason])
+      )
+    : [];
+  const allGroups = focus ? [] : groupList(fields);
+  const nothing = focus ? !clickedAssets.length && !selectedGroups.length && !relatedGroups.length : !allGroups.length;
+
+  // A new selection starts at the top of its fields.
+  const body = useRef(null);
+  useEffect(() => {
+    if (focus && body.current) body.current.scrollTop = 0;
+  }, [selection]);
+
+  function renderRow(f) {
+    return (
+      <FieldRow
+        key={f.path}
+        field={f}
+        value={valueOf(f)}
+        changed={f.path in overrides}
+        dimmed={disabled(f)}
+        languages={languages}
+        releaseId={releaseId}
+        uploads={uploads}
+        onSet={(v) => set(f, v)}
+        onReset={() => set(f, f.default)}
+        onUpload={(file) => upload(f, file)}
+      />
+    );
+  }
+
+  function renderGroup(name, list, { forceOpen = false, reason = null } = {}) {
+    const changed = list.filter((f) => f.path in overrides).length;
+    const isOpen = forceOpen || searching || open.has(name);
+    const why = reason && REASONS[reason];
+    return (
+      <section key={name} className={`group${isOpen ? " open" : ""}`}>
+        <button
+          className="group-head"
+          onClick={() => toggle(name)}
+          onMouseEnter={() => onHoverComponent?.(componentOf(list[0].path))}
+        >
+          <span className="chev">{isOpen ? "▾" : "▸"}</span>
+          {why && (
+            <span className="reason" title={why.hint}>
+              {why.label}
+            </span>
+          )}
+          {name}
+          {changed > 0 && <span className="dot">{changed}</span>}
+          <span className="muted small">{list.length}</span>
+        </button>
+        {isOpen && list.map(renderRow)}
+      </section>
+    );
+  }
 
   const toggle = (name) =>
     setOpen((s) => {
@@ -108,25 +210,25 @@ export function FieldPanel({
       <div className="fields-head">
         <input
           type="search"
-          placeholder={`${fields.length} alanda ara…`}
+          placeholder={`Search ${fields.length} ${fields.length === 1 ? "field" : "fields"}…`}
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
         <div className="fields-tools">
           <label className="inline">
             <input type="checkbox" checked={changedOnly} onChange={(e) => setChangedOnly(e.target.checked)} />
-            Sadece değişenler ({changedCount})
+            Changed only ({changedCount})
           </label>
           <button
             className="small"
             onClick={() => {
-              const lang = (window.prompt("Dil kodu (ör. tr, de, pt-br):") || "").trim().toLowerCase();
+              const lang = (window.prompt("Language code (e.g. tr, de, pt-br):") || "").trim().toLowerCase();
               if (!lang) return;
-              if (!/^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$/.test(lang)) return onError(`Geçersiz dil kodu: ${lang}`);
+              if (!/^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$/.test(lang)) return onError(`Invalid language code: ${lang}`);
               if (!languages.includes(lang)) onAddLanguage(lang);
             }}
           >
-            + Dil
+            + Language
           </button>
         </div>
       </div>
@@ -135,7 +237,8 @@ export function FieldPanel({
         <div className="banner warn">
           {check.orphans.length > 0 && (
             <div>
-              Bu release'te olmayan {check.orphans.length} alan (export'ta yok sayılır):
+              {check.orphans.length} {check.orphans.length === 1 ? "field" : "fields"} not in this release (ignored on
+              export):
               <ul>
                 {check.orphans.map((p) => (
                   <li key={p} className="mono">
@@ -151,7 +254,7 @@ export function FieldPanel({
                   onChange(next);
                 }}
               >
-                Varyanttan temizle
+                Remove from variant
               </button>
             </div>
           )}
@@ -163,38 +266,44 @@ export function FieldPanel({
         </div>
       )}
 
-      <div className="fields-body">
-        {groups.length === 0 && <p className="muted center">Eşleşen alan yok.</p>}
-        {groups.map(([name, list]) => {
-          const changed = list.filter((f) => f.path in overrides).length;
-          const isOpen = expandAll || open.has(name);
-          return (
-            <section key={name} className={`group${isOpen ? " open" : ""}`}>
-              <button className="group-head" onClick={() => toggle(name)}>
-                <span className="chev">{isOpen ? "▾" : "▸"}</span>
-                {name}
-                {changed > 0 && <span className="dot">{changed}</span>}
-                <span className="muted small">{list.length}</span>
-              </button>
-              {isOpen &&
-                list.map((f) => (
-                  <FieldRow
-                    key={f.path}
-                    field={f}
-                    value={valueOf(f)}
-                    changed={f.path in overrides}
-                    dimmed={disabled(f)}
-                    languages={languages}
-                    releaseId={releaseId}
-                    uploads={uploads}
-                    onSet={(v) => set(f, v)}
-                    onReset={() => set(f, f.default)}
-                    onUpload={(file) => upload(f, file)}
-                  />
-                ))}
-            </section>
-          );
-        })}
+      {focus && (
+        <div className="focus-bar">
+          <span>
+            <span className="muted small">Selected</span>
+            <strong>{focusLabel || focus}</strong>
+          </span>
+          <button className="small" onClick={onClearFocus}>
+            Show all
+          </button>
+        </div>
+      )}
+
+      <div className="fields-body" ref={body} onMouseLeave={() => onHoverComponent?.(null)}>
+        {nothing && <p className="muted center">No matching fields.</p>}
+
+        {clickedAssets.length > 0 && (
+          <section className="group open clicked">
+            <div className="section-title">
+              What you clicked
+              {frames.length > 0 && (
+                <span className="muted small" title="The image is one frame of an atlas: edit the atlas files below">
+                  {" "}
+                  · frame {frames.join(", ")}
+                </span>
+              )}
+            </div>
+            {clickedAssets.map(({ path }) => renderRow(byPath.get(path)))}
+          </section>
+        )}
+
+        {(focus ? selectedGroups : allGroups).map(([name, list]) => renderGroup(name, list, { forceOpen: !!focus }))}
+
+        {relatedGroups.length > 0 && (
+          <>
+            <div className="section-title related-title">Related</div>
+            {relatedGroups.map(([name, list, reason]) => renderGroup(name, list, { reason }))}
+          </>
+        )}
       </div>
     </aside>
   );
@@ -206,18 +315,18 @@ function FieldRow({ field, value, changed, dimmed, languages, releaseId, uploads
     <div className={`field${changed ? " changed" : ""}${dimmed ? " dimmed" : ""}`} title={field.path}>
       <div className="field-label">
         <span>
-          {field.label}
-          {isAsset && <span className="muted"> · {field.type}</span>}
+          {fieldLabel(field)}
+          {isAsset && !field.loader && <span className="muted"> · {field.type}</span>}
           {restartsGame(field) && (
-            <span className="restart" title="Değişince oyun baştan başlar">
+            <span className="restart" title="Changing this restarts the game">
               {" "}
               ↻
             </span>
           )}
         </span>
         {changed && (
-          <button className="link" onClick={onReset} title="Varsayılana dön">
-            ↺ varsayılan
+          <button className="link" onClick={onReset} title="Reset to default">
+            ↺ Default
           </button>
         )}
       </div>
@@ -243,7 +352,7 @@ function Control({ field, value, languages, releaseId, uploads, onSet, onUpload 
       return (
         <label className="switch">
           <input type="checkbox" checked={!!value} onChange={(e) => onSet(e.target.checked)} />
-          <span>{value ? "Açık" : "Kapalı"}</span>
+          <span>{value ? "On" : "Off"}</span>
         </label>
       );
     case "color":
@@ -296,7 +405,7 @@ function Control({ field, value, languages, releaseId, uploads, onSet, onUpload 
 function AssetControl({ field, value, releaseId, uploads, onUpload }) {
   const [busy, setBusy] = useState(false);
   const src = uploads[value] || assetUrl(releaseId, value);
-  const name = value.startsWith("u/") ? "yüklenen dosya" : value.split("/").pop();
+  const name = value.startsWith("u/") ? "uploaded file" : value.split("/").pop();
   const size = uploads[value]
     ? formatBytes(Math.floor(((uploads[value].length - uploads[value].indexOf(",") - 1) * 3) / 4))
     : null;
@@ -312,7 +421,7 @@ function AssetControl({ field, value, releaseId, uploads, onUpload }) {
         {size && <span className="muted small"> · {size}</span>}
       </span>
       <label className={`button small${busy ? " disabled" : ""}`}>
-        {busy ? "…" : "Değiştir"}
+        {busy ? "…" : "Replace"}
         <input
           type="file"
           hidden

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { UserMenu } from "../auth.jsx";
 import { api } from "../api.js";
 import { gameHash, navigate } from "../App.jsx";
 import { ReleaseDrop } from "./GameList.jsx";
@@ -21,6 +22,9 @@ export function GameEditor({ gameId, variantId }) {
   const [saveState, setSaveState] = useState("saved");
   const [extraLangs, setExtraLangs] = useState([]);
   const [previewLang, setPreviewLang] = useState("");
+  // What was picked in the preview ({ componentId, related, assets }) and the component to outline.
+  const [selection, setSelection] = useState(null);
+  const [outline, setOutline] = useState(null);
   const [exporting, setExporting] = useState(false);
   const [error, setError] = useState("");
 
@@ -59,7 +63,7 @@ export function GameEditor({ gameId, variantId }) {
       setSaveState((s) => (timer.current ? s : "saved"));
     } catch (e) {
       setSaveState("error");
-      setError(`Kaydedilemedi: ${e.message}`);
+      setError(`Save failed: ${e.message}`);
     }
   }, []);
 
@@ -128,7 +132,7 @@ export function GameEditor({ gameId, variantId }) {
   }, [previewOverrides, uploads]);
 
   if (error && !data) return <FullPageError message={error} />;
-  if (!data) return <div className="page center muted">Yükleniyor…</div>;
+  if (!data) return <div className="page center muted">Loading…</div>;
   const release = data.releases.find((r) => r.id === releaseId);
 
   return (
@@ -143,12 +147,12 @@ export function GameEditor({ gameId, variantId }) {
           className="release-select"
           value={releaseId ?? ""}
           onChange={(e) => setReleaseId(Number(e.target.value))}
-          title="Önizleme ve export için kullanılan release"
+          title="Release used for preview and export"
         >
           {data.releases.map((r, i) => (
             <option key={r.id} value={r.id}>
               r{r.number}
-              {i === 0 ? " (en güncel)" : ""} · {formatDate(r.createdAt)}
+              {i === 0 ? " (latest)" : ""} · {formatDate(r.createdAt)}
               {r.notes ? ` · ${r.notes}` : ""}
             </option>
           ))}
@@ -157,7 +161,7 @@ export function GameEditor({ gameId, variantId }) {
           compact
           onUploaded={({ release: r, created }) => {
             load().then(() => setReleaseId(r.id));
-            if (!created) setError(`Bu build zaten yüklü (r${r.number}).`);
+            if (!created) setError(`This build is already uploaded (r${r.number}).`);
           }}
           onError={setError}
         />
@@ -166,13 +170,14 @@ export function GameEditor({ gameId, variantId }) {
         <button className="primary" disabled={!manifest} onClick={() => setExporting(true)}>
           Export…
         </button>
+        <UserMenu />
       </header>
 
       {error && (
         <div className="banner error" role="alert">
           {error}
           <button className="link" onClick={() => setError("")}>
-            kapat
+            Dismiss
           </button>
         </div>
       )}
@@ -203,6 +208,8 @@ export function GameEditor({ gameId, variantId }) {
             previewLang={previewLang}
             onPreviewLang={setPreviewLang}
             release={release}
+            highlight={outline ?? selection?.componentId ?? null}
+            onSelectComponent={setSelection}
           />
         ) : (
           <section className="preview" />
@@ -220,9 +227,12 @@ export function GameEditor({ gameId, variantId }) {
             onChange={changeOverrides}
             onUploaded={(id, dataUri) => setUploads((u) => ({ ...u, [id]: dataUri }))}
             onError={setError}
+            selection={selection}
+            onClearFocus={() => setSelection(null)}
+            onHoverComponent={setOutline}
           />
         ) : (
-          <aside className="fields center muted">Alanlar yükleniyor…</aside>
+          <aside className="fields center muted">Loading fields…</aside>
         )}
       </div>
 
@@ -242,7 +252,7 @@ export function GameEditor({ gameId, variantId }) {
 }
 
 function SaveBadge({ state }) {
-  const text = { saved: "Kaydedildi", dirty: "Değişti…", saving: "Kaydediliyor…", error: "Kaydedilemedi" }[state];
+  const text = { saved: "Saved", dirty: "Unsaved changes", saving: "Saving…", error: "Save failed" }[state];
   return <span className={`save-badge ${state}`}>{text}</span>;
 }
 
@@ -250,7 +260,7 @@ function FullPageError({ message }) {
   return (
     <div className="page center">
       <p className="error">{message}</p>
-      <a href="#/">← Oyunlar</a>
+      <a href="#/">← Games</a>
     </div>
   );
 }

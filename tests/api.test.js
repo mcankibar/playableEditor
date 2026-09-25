@@ -67,11 +67,23 @@ function releaseHtml({ releaseId = "r1", extraField = true } = {}) {
   )}</body></html>`;
 }
 
+const ADMIN = { username: "tester", password: "correct horse" };
+
+/** fn(client signed in as ADMIN, app for anonymous requests, dataDir) */
 async function withApp(fn) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "studio-"));
-  const app = await buildApp({ dataDir });
+  const app = await buildApp({ dataDir, admin: ADMIN });
   try {
-    await fn(app);
+    const login = await app.inject({ method: "POST", url: "/api/login", payload: ADMIN });
+    assert.equal(login.statusCode, 200, login.body);
+    const cookie = login.headers["set-cookie"].split(";")[0];
+    const client = {
+      inject: (opts) => {
+        const o = typeof opts === "string" ? { url: opts } : opts;
+        return app.inject({ ...o, headers: { cookie, ...o.headers } });
+      }
+    };
+    await fn(client, app, dataDir);
   } finally {
     await app.close();
     fs.rmSync(dataDir, { recursive: true, force: true });
@@ -282,4 +294,71 @@ test("variant files from the template's dev panel can be imported", () =>
       payload: { overrides: { "components.logo.assets.logo": "file:x.png" } }
     });
     assert.equal(fileRef.statusCode, 400);
+  }));
+
+test("auth can be switched off for local testing", async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "studio-"));
+  const app = await buildApp({ dataDir, auth: false });
+  try {
+    assert.deepEqual(json(await app.inject("/api/me")), { id: 0, username: "local", authDisabled: true });
+    assert.equal((await upload(app, releaseHtml())).statusCode, 201);
+    assert.equal(json(await app.inject("/api/games")).length, 1);
+  } finally {
+    await app.close();
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("auth: API needs a session; login, logout, publish tokens, lockout", () =>
+  withApp(async (client, app, dataDir) => {
+    for (const url of ["/api/games", "/api/me", "/api/networks", "/api/releases/1/play"])
+      assert.equal((await app.inject(url)).statusCode, 401, url);
+    assert.equal((await upload(app, releaseHtml())).statusCode, 401);
+
+    const wrong = await app.inject({ method: "POST", url: "/api/login", payload: { ...ADMIN, password: "nope nope" } });
+    assert.equal(wrong.statusCode, 401);
+    assert.equal(wrong.headers["set-cookie"], undefined);
+    const unknown = await app.inject({ method: "POST", url: "/api/login", payload: { username: "x", password: "y" } });
+    assert.equal(json(unknown).error, json(wrong).error);
+
+    const login = await app.inject({ method: "POST", url: "/api/login", payload: { ...ADMIN, username: "TESTER" } });
+    assert.equal(json(login).username, "tester");
+    const setCookie = login.headers["set-cookie"];
+    assert.match(setCookie, /HttpOnly/);
+    assert.match(setCookie, /SameSite=Lax/);
+    assert.doesNotMatch(setCookie, /Secure/);
+    const cookie = setCookie.split(";")[0];
+    assert.equal(json(await app.inject({ url: "/api/me", headers: { cookie } })).username, "tester");
+    assert.equal((await app.inject({ method: "POST", url: "/api/logout", headers: { cookie } })).statusCode, 204);
+    assert.equal((await app.inject({ url: "/api/me", headers: { cookie } })).statusCode, 401);
+    assert.equal((await client.inject("/api/me")).statusCode, 200, "other sessions stay signed in");
+
+    // Publish tokens: release uploads only. Stored hashed, like sessions.
+    const { openDb } = await import("../server/db.js");
+    const { newToken, tokenHash } = await import("../server/auth.js");
+    const token = newToken("pst_");
+    const me = json(await client.inject("/api/me"));
+    const db = openDb(path.join(dataDir, "studio.db"));
+    db.addApiToken(tokenHash(token), me.id, "ci");
+    db.close();
+    const auth = { authorization: `Bearer ${token}` };
+    const published = await app.inject({
+      method: "POST",
+      url: "/api/releases",
+      headers: { ...auth, "content-type": "text/html" },
+      payload: releaseHtml()
+    });
+    assert.equal(published.statusCode, 201);
+    assert.equal((await app.inject({ url: "/api/games", headers: auth })).statusCode, 401);
+    const badToken = { authorization: "Bearer pst_nope", "content-type": "text/html" };
+    assert.equal(
+      (await app.inject({ method: "POST", url: "/api/releases", headers: badToken, payload: releaseHtml() }))
+        .statusCode,
+      401
+    );
+
+    for (let i = 0; i < 10; i++)
+      await app.inject({ method: "POST", url: "/api/login", payload: { ...ADMIN, password: "wrong wrong" } });
+    const locked = await app.inject({ method: "POST", url: "/api/login", payload: ADMIN });
+    assert.equal(locked.statusCode, 429);
   }));

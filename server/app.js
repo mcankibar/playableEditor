@@ -1,4 +1,5 @@
-// HTTP API. No auth yet: the Studio is meant to run on a trusted machine / LAN.
+// HTTP API. Every /api route needs a signed-in user (session cookie), except POST /api/login.
+// Publish tokens (Authorization: Bearer) can only upload releases — for `npm run release` / CI.
 import crypto from "node:crypto";
 import path from "node:path";
 import Fastify from "fastify";
@@ -7,6 +8,20 @@ import { openStore } from "./store.js";
 import { exportBatch } from "./exporter.js";
 import { inspectRelease } from "../shared/playable/export/patch.js";
 import { EXPORT_NETWORKS } from "../shared/playable/export/networks.js";
+import {
+  SESSION_COOKIE,
+  SESSION_DAYS,
+  burnPasswordCheck,
+  hashPassword,
+  loginLimiter,
+  newToken,
+  readCookie,
+  sessionCookie,
+  tokenHash,
+  validatePassword,
+  validateUsername,
+  verifyPassword
+} from "./auth.js";
 import { decodeBase64, detectMime, validateAssetId } from "../shared/playable/kit/assets.js";
 
 const BODY_LIMIT = 64 * 1024 * 1024;
@@ -59,10 +74,30 @@ function parseDataUri(uri) {
   return m[2];
 }
 
-export async function buildApp({ dataDir, logger = false }) {
+/**
+ * @param secureCookies  mark the session cookie Secure (the Studio is served over HTTPS)
+ * @param trustProxy     behind a reverse proxy: take the client address from X-Forwarded-For
+ * @param admin          { username, password } created when the database has no users yet
+ * @param auth           false: no sign-in at all, every request acts as a local user (local testing only)
+ */
+export async function buildApp({
+  dataDir,
+  logger = false,
+  secureCookies = false,
+  trustProxy = false,
+  admin = null,
+  auth = true
+}) {
   const store = openStore(dataDir);
   const db = openDb(path.join(dataDir, "studio.db"));
-  const app = Fastify({ logger, bodyLimit: BODY_LIMIT });
+  const app = Fastify({ logger, bodyLimit: BODY_LIMIT, trustProxy });
+
+  if (admin?.password && db.countUsers() === 0) {
+    db.createUser(validateUsername(admin.username || "admin"), hashPassword(validatePassword(admin.password)));
+  }
+  if (!auth) app.log.warn("Sign-in is disabled (STUDIO_AUTH=0): anyone who can reach this port can use the Studio");
+  else if (db.countUsers() === 0)
+    app.log.warn("No users yet — add one with: npm run users -- add <name>  (or set STUDIO_ADMIN_PASSWORD)");
 
   app.addContentTypeParser("text/html", { parseAs: "string", bodyLimit: BODY_LIMIT }, (req, body, done) =>
     done(null, body)
@@ -73,6 +108,62 @@ export async function buildApp({ dataDir, logger = false }) {
     if (status >= 500) req.log.error(error);
     reply.status(status).send({ error: status >= 500 && !error.statusCode ? "Internal error" : error.message });
   });
+
+  // ── auth ─────────────────────────────────────────────────────────────────
+  const limiter = loginLimiter();
+  const PUBLIC = new Set(["POST /api/login"]);
+  const TOKEN_ROUTES = new Set(["POST /api/releases"]);
+
+  const LOCAL_USER = Object.freeze({ id: 0, username: "local", authDisabled: true });
+
+  app.decorateRequest("user", null);
+  app.addHook("onRequest", async (req) => {
+    const url = req.url.split("?")[0];
+    if (!url.startsWith("/api/")) return; // the web UI itself is public; it shows the login page
+    if (!auth) {
+      req.user = LOCAL_USER;
+      return;
+    }
+    const route = `${req.method} ${url}`;
+    if (PUBLIC.has(route)) return;
+    const bearer = /^Bearer\s+(\S+)$/i.exec(req.headers.authorization || "")?.[1];
+    if (bearer) {
+      req.user = TOKEN_ROUTES.has(route) ? db.apiTokenUser(tokenHash(bearer)) : null;
+      if (!req.user) throw new HttpError(401, "Invalid token, or the token can't be used here");
+      return;
+    }
+    const session = readCookie(req.headers.cookie, SESSION_COOKIE);
+    req.user = session ? db.sessionUser(tokenHash(session)) : null;
+    if (!req.user) throw new HttpError(401, "Sign in required");
+  });
+
+  app.post("/api/login", async (req, reply) => {
+    const { username, password } = req.body ?? {};
+    const key = req.ip;
+    if (limiter.blocked(key)) throw new HttpError(429, "Too many failed sign-ins, try again in 15 minutes");
+    if (typeof username !== "string" || typeof password !== "string" || password.length > 200)
+      throw badRequest("username and password are required");
+    const login = db.findLogin(username.trim());
+    const ok = login ? verifyPassword(password, login.passwordHash) : burnPasswordCheck(password) && false;
+    if (!ok) {
+      limiter.fail(key);
+      throw new HttpError(401, "Wrong username or password");
+    }
+    limiter.reset(key);
+    const token = newToken();
+    db.createSession(tokenHash(token), login.user.id, new Date(Date.now() + SESSION_DAYS * 86400000).toISOString());
+    reply.header("Set-Cookie", sessionCookie(token, { secure: secureCookies }));
+    return login.user;
+  });
+
+  app.post("/api/logout", async (req, reply) => {
+    const session = readCookie(req.headers.cookie, SESSION_COOKIE);
+    if (session) db.deleteSession(tokenHash(session));
+    reply.header("Set-Cookie", sessionCookie("", { secure: secureCookies, maxAge: 0 }));
+    reply.status(204);
+  });
+
+  app.get("/api/me", async (req) => req.user);
 
   const game = (id) =>
     db.getGame(id) ??
@@ -266,12 +357,12 @@ export async function buildApp({ dataDir, logger = false }) {
     if (!Array.isArray(networks) || !Array.isArray(langs)) throw badRequest("networks and langs must be arrays");
     const rel = releaseId === undefined ? db.listReleases(v.gameId)[0] : release(releaseId);
     if (!rel || rel.gameId !== v.gameId) throw badRequest("No release of this game to export");
-    const { html, manifest } = store.release(rel.id);
+    const prepared = store.release(rel.id);
     let out;
     try {
       out = exportBatch({
-        html,
-        manifest,
+        prepared,
+        manifest: prepared.manifest,
         release: rel,
         variant: v,
         uploads: variantUploads(v.overrides),

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { UserMenu } from "../auth.jsx";
 import { api } from "../api.js";
 import { gameHash, navigate } from "../App.jsx";
 import { formatBytes, formatDate } from "../format.js";
@@ -16,21 +17,23 @@ export function GameList() {
     <div className="page">
       <header className="topbar">
         <span className="brand">Playable Studio</span>
+        <span className="spacer" />
+        <UserMenu />
       </header>
       <main className="list-main">
         <ReleaseDrop
           onUploaded={({ game, created, release }) => {
             if (created) navigate(gameHash(game.id));
-            else setError(`Bu build zaten yüklü (r${release.number}).`);
+            else setError(`This build is already uploaded (r${release.number}).`);
             load();
           }}
           onError={setError}
         />
         {error && <p className="error">{error}</p>}
         {games === null ? (
-          <p className="muted">Yükleniyor…</p>
+          <p className="muted">Loading…</p>
         ) : games.length === 0 ? (
-          <p className="muted">Henüz oyun yok. İlk release'i yukarıdan yükleyin.</p>
+          <p className="muted">No games yet. Upload the first release above.</p>
         ) : (
           <ul className="game-grid">
             {games.map((g) => (
@@ -41,11 +44,13 @@ export function GameList() {
                   {g.latestRelease && (
                     <span className="meta">
                       <span className="badge">r{g.latestRelease.number}</span>
-                      {formatDate(g.latestRelease.createdAt)} · {g.latestRelease.fieldCount} alan ·{" "}
-                      {formatBytes(g.latestRelease.size)}
+                      {formatDate(g.latestRelease.createdAt)} · {g.latestRelease.fieldCount}{" "}
+                      {g.latestRelease.fieldCount === 1 ? "field" : "fields"} · {formatBytes(g.latestRelease.size)}
                     </span>
                   )}
-                  <span className="meta">{g.variantCount} varyant</span>
+                  <span className="meta">
+                    {g.variantCount} {g.variantCount === 1 ? "variant" : "variants"}
+                  </span>
                 </a>
               </li>
             ))}
@@ -64,7 +69,7 @@ export function ReleaseDrop({ onUploaded, onError, compact = false }) {
     if (!file) return;
     setBusy(true);
     try {
-      const notes = compact ? "" : (window.prompt("Release notu (isteğe bağlı):", "") ?? "");
+      const notes = compact ? "" : (window.prompt("Release notes (optional):", "") ?? "");
       onUploaded(await api.uploadRelease(await file.text(), notes));
     } catch (e) {
       onError(e.message);
@@ -89,15 +94,14 @@ export function ReleaseDrop({ onUploaded, onError, compact = false }) {
     >
       <input type="file" accept=".html,text/html" hidden onChange={(e) => upload(e.target.files[0])} />
       {busy ? (
-        "Yükleniyor…"
+        "Loading…"
       ) : compact ? (
-        "Yeni release yükle"
+        "Upload new release"
       ) : (
         <>
-          <strong>Release yükle</strong>
+          <strong>Upload release</strong>
           <span>
-            Oyunun <code>dist/index.html</code> dosyasını buraya bırakın ya da oyun klasöründe{" "}
-            <code>npm run release</code> çalıştırın.
+            Drop the game's <code>dist/index.html</code> here, or run <code>npm run release</code> in the game folder.
           </span>
         </>
       )}

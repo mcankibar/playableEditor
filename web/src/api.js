@@ -1,3 +1,6 @@
+/** Fired when the session is gone (expired, signed out elsewhere); App shows the login page. */
+export const UNAUTHORIZED_EVENT = "studio:unauthorized";
+
 async function request(method, url, body, { raw = false, headers = {} } = {}) {
   const init = { method, headers: { ...headers } };
   if (body !== undefined) {
@@ -8,6 +11,7 @@ async function request(method, url, body, { raw = false, headers = {} } = {}) {
     }
   }
   const res = await fetch(url, init);
+  if (res.status === 401 && url !== "/api/login") window.dispatchEvent(new Event(UNAUTHORIZED_EVENT));
   if (!res.ok) {
     let message = `${res.status} ${res.statusText}`;
     try {
@@ -22,6 +26,10 @@ async function request(method, url, body, { raw = false, headers = {} } = {}) {
 const enc = encodeURIComponent;
 
 export const api = {
+  me: () => request("GET", "/api/me"),
+  login: (username, password) => request("POST", "/api/login", { username, password }),
+  logout: () => request("POST", "/api/logout"),
+
   networks: () => request("GET", "/api/networks"),
   games: () => request("GET", "/api/games"),
   game: (gameId) => request("GET", `/api/games/${enc(gameId)}`),

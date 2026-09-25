@@ -9,7 +9,16 @@ const port = Number(process.env.PORT || 5300);
 const host = process.env.HOST || "localhost";
 const dataDir = path.resolve(root, process.env.PLAYABLE_DATA || "data");
 
-const app = await buildApp({ dataDir, logger: { level: production ? "info" : "warn" } });
+const app = await buildApp({
+  dataDir,
+  logger: { level: production ? "info" : "warn" },
+  // Secure cookies need HTTPS; set STUDIO_SECURE_COOKIES=0 to use a production build over plain http.
+  secureCookies: (process.env.STUDIO_SECURE_COOKIES ?? (production ? "1" : "0")) === "1",
+  trustProxy: process.env.STUDIO_TRUST_PROXY === "1",
+  admin: { username: process.env.STUDIO_ADMIN_USER, password: process.env.STUDIO_ADMIN_PASSWORD },
+  // Sign-in is off for `npm run dev` (local testing) and on for `npm start`, unless STUDIO_AUTH says otherwise.
+  auth: (process.env.STUDIO_AUTH ?? (production ? "1" : "0")) === "1"
+});
 
 if (production) {
   const { default: fastifyStatic } = await import("@fastify/static");

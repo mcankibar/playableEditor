@@ -14,11 +14,11 @@ export const slug = (s) =>
     .replace(/[^a-zA-Z0-9._-]+/g, "-");
 
 /**
- * @param html     release HTML
+ * @param release  prepareRelease(html), cached per release so its assets are parsed and checked once
  * @param uploads  { assetId: { mime, base64 } } for the uploaded files the variant uses
  * @returns {{ fileName, mime, data: Uint8Array, report }}
  */
-export function exportBatch({ html, manifest, release, variant, uploads, networks, langs }) {
+export function exportBatch({ prepared, manifest, release, variant, uploads, networks, langs }) {
   if (!networks.length || !langs.length) throw new Error("Pick at least one network and one language");
   for (const n of networks) if (!Object.hasOwn(EXPORT_NETWORKS, n)) throw new Error(`Unknown network: ${n}`);
 
@@ -26,7 +26,7 @@ export function exportBatch({ html, manifest, release, variant, uploads, network
   const outputs = [];
   for (const network of networks) {
     for (const lang of langs) {
-      const packed = packageVariant(html, {
+      const packed = packageVariant(prepared, {
         overrides: variant.overrides,
         uploads,
         network,

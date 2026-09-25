@@ -10,10 +10,10 @@ import {
   readAssets,
   readGameCode,
   readJson,
-  replaceBlock,
   gameBlock,
   FORMAT_VERSION,
   BLOCKS,
+  blockRange,
   hasBlock
 } from "../build/blocks.js";
 import { ASSET_TYPES } from "../kit/fields.js";
@@ -59,6 +59,56 @@ export function inspectRelease(html) {
   };
 }
 
+/**
+ * Parses a release once for many exports (every network × language): block offsets, embedded
+ * config and assets, and a cache of asset checks. A release never changes, so an asset that passed
+ * validation for a field type passes again. Treat the result as read-only.
+ */
+export function prepareRelease(html) {
+  const info = inspectRelease(html);
+  const ranges = BLOCKS.map((name) => ({ name, ...blockRange(html, name) })).sort((a, b) => a.start - b.start);
+  ranges.forEach((r, i) => {
+    if (i && r.start < ranges[i - 1].end) throw new Error(`pl:${r.name} overlaps pl:${ranges[i - 1].name}`);
+  });
+  return {
+    html,
+    ...info,
+    ranges,
+    gameCode: readGameCode(html),
+    checked: new Map(),
+    bytes: new Map()
+  };
+}
+
+const toRelease = (release) => (typeof release === "string" ? prepareRelease(release) : release);
+
+function validateReleaseAsset(rel, id, asset, field) {
+  const key = `${id}\0${field.type}\0${field.maxBytes ?? ""}`;
+  if (!rel.checked.has(key)) {
+    try {
+      validateAsset(id, asset, field);
+      rel.checked.set(key, null);
+    } catch (e) {
+      rel.checked.set(key, e.message);
+    }
+  }
+  const error = rel.checked.get(key);
+  if (error !== null) throw new Error(error);
+}
+
+/** Rebuilds the release HTML with some blocks replaced, in one pass over the original. */
+function replaceBlocks(rel, replacements) {
+  const parts = [];
+  let pos = 0;
+  for (const r of rel.ranges) {
+    if (!Object.hasOwn(replacements, r.name)) continue;
+    parts.push(rel.html.slice(pos, r.start), replacements[r.name]);
+    pos = r.end;
+  }
+  parts.push(rel.html.slice(pos));
+  return parts.join("");
+}
+
 function insertBefore(html, tag, text) {
   const i = tag === "</head>" ? html.indexOf(tag) : html.lastIndexOf(tag);
   if (i === -1) throw new Error(`${tag} not found`);
@@ -72,10 +122,24 @@ function base64ToBytes(base64) {
   return bytes;
 }
 
-const byteLength = (data) => (typeof data === "string" ? new TextEncoder().encode(data).length : data.length);
+/** UTF-8 size without encoding: the HTML is several MB and gets encoded once more when packaged. */
+function byteLength(data) {
+  if (typeof data !== "string") return data.length;
+  let n = data.length;
+  for (let i = 0; i < data.length; i++) {
+    const c = data.charCodeAt(i);
+    if (c < 0x80) continue;
+    if (c < 0x800) n += 1;
+    else if (c >= 0xd800 && c <= 0xdbff && i + 1 < data.length && (data.charCodeAt(i + 1) & 0xfc00) === 0xdc00) {
+      n += 2;
+      i++;
+    } else n += 2;
+  }
+  return n;
+}
 
 /**
- * @param html      release HTML (dist/index.html)
+ * @param release   release HTML (dist/index.html) or prepareRelease(html)
  * @param options.overrides  { path: value } — asset fields take an asset id
  * @param options.uploads    { assetId: { mime, base64 } } for ids that are not in the release
  * @param options.network    one of EXPORT_NETWORKS
@@ -85,7 +149,7 @@ const byteLength = (data) => (typeof data === "string" ? new TextEncoder().encod
  * @returns {{ files: Array<{ name, data }>, report }}
  */
 export function exportVariant(
-  html,
+  release,
   { overrides = {}, uploads = {}, network = "default", language = null, strict = false } = {}
 ) {
   for (const [name, value] of Object.entries({ overrides, uploads })) {
@@ -94,7 +158,8 @@ export function exportVariant(
   const net = Object.prototype.hasOwnProperty.call(EXPORT_NETWORKS, network) && EXPORT_NETWORKS[network];
   if (!net) throw new Error(`unknown network "${network}"`);
 
-  const { manifest, overrides: embedded, assets: releaseAssets } = inspectRelease(html);
+  const rel = toRelease(release);
+  const { manifest, overrides: embedded, assets: releaseAssets } = rel;
   const fields = manifestFields(manifest);
 
   const requested = { ...embedded, ...overrides };
@@ -116,14 +181,16 @@ export function exportVariant(
   const assetList = [];
   for (const id of used) {
     validateAssetId(id);
-    const src = Object.prototype.hasOwnProperty.call(uploads, id) ? uploads[id] : releaseAssets.get(id);
+    const uploaded = Object.prototype.hasOwnProperty.call(uploads, id);
+    const src = uploaded ? uploads[id] : releaseAssets.get(id);
     if (!src || (!src.base64 && !src.src)) {
       missing.push(id);
       continue;
     }
     for (const field of assetFields.filter((f) => (values[f.path] ?? f.default) === id)) {
       try {
-        validateAsset(id, src, field);
+        if (uploaded) validateAsset(id, src, field);
+        else validateReleaseAsset(rel, id, src, field);
       } catch (e) {
         errors.push(`${field.path}: ${e.message}`);
       }
@@ -132,6 +199,7 @@ export function exportVariant(
     if (placeholder) pruned.push(id);
     assetList.push({
       id,
+      fromRelease: !uploaded && !placeholder,
       ...(placeholder || { mime: src.mime, base64: src.base64 })
     });
   }
@@ -143,30 +211,37 @@ export function exportVariant(
   let assetsHtml;
   if (net.assetFiles) {
     assetsHtml = assetsBlock(
-      assetList.map(({ id, mime, base64 }) => {
-        files.push({ name: `assets/${id}`, data: base64ToBytes(base64) });
+      assetList.map(({ id, mime, base64, fromRelease }) => {
+        let bytes = fromRelease && rel.bytes.get(id);
+        if (!bytes) {
+          bytes = base64ToBytes(base64);
+          if (fromRelease) rel.bytes.set(id, bytes);
+        }
+        files.push({ name: `assets/${id}`, data: bytes });
         return { id, mime, src: `assets/${id}` };
       })
     );
   } else {
-    assetsHtml = assetsBlock(assetList);
+    assetsHtml = assetsBlock(assetList.map(({ id, mime, base64 }) => ({ id, mime, base64 })));
   }
 
   // ── html ──────────────────────────────────────────────────────────────
-  let out = html;
-  out = replaceBlock(out, "manifest", "");
-  out = replaceBlock(out, "config", configBlock(values));
-  out = replaceBlock(out, "assets", assetsHtml);
-  out = replaceBlock(out, "network", networkBlock(network, "publish"));
-
-  const code = readGameCode(out);
+  const code = rel.gameCode;
   const beforeGame = net.beforeGame ? net.beforeGame + "\n" : "";
+  let game;
   if (net.inline === false) {
-    out = replaceBlock(out, "game", beforeGame + `<script src="${net.script}"></script>`);
+    game = beforeGame + `<script src="${net.script}"></script>`;
     files.push({ name: net.script, data: code });
   } else {
-    out = replaceBlock(out, "game", beforeGame + gameBlock(code));
+    game = beforeGame + gameBlock(code);
   }
+  let out = replaceBlocks(rel, {
+    manifest: "",
+    config: configBlock(values),
+    assets: assetsHtml,
+    network: networkBlock(network, "publish"),
+    game
+  });
   // Insert before the LAST </head> / </body>: the game code may contain those strings too.
   if (net.head) out = insertBefore(out, "</head>", net.head + "\n");
   if (net.bodyEnd) out = insertBefore(out, "</body>", net.bodyEnd + "\n");
@@ -198,8 +273,8 @@ export function exportVariant(
 }
 
 /** Package and enforce limits identically in Node and in a browser editor. */
-export function packageVariant(html, options = {}) {
-  const { files, report } = exportVariant(html, options);
+export function packageVariant(release, options = {}) {
+  const { files, report } = exportVariant(release, options);
   const net = EXPORT_NETWORKS[report.network];
   let data;
   if (net.container === "zip") {

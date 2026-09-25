@@ -32,26 +32,26 @@ export function VariantList({
   };
 
   const create = act(async () => {
-    const name = window.prompt("Yeni varyantın adı:", "");
+    const name = window.prompt("Name of the new variant:", "");
     if (!name) return;
     onChanged((await api.createVariant(gameId, { name })).id);
   });
 
   const duplicate = act(async () => {
-    const name = window.prompt("Kopyanın adı:", `${selected.name} kopya`);
+    const name = window.prompt("Name of the copy:", `${selected.name} copy`);
     if (!name) return;
     onChanged((await api.createVariant(gameId, { name, copyFrom: selected.id })).id);
   });
 
   const rename = act(async () => {
-    const name = window.prompt("Yeni ad:", selected.name);
+    const name = window.prompt("New name:", selected.name);
     if (!name || name === selected.name) return;
     await api.updateVariant(selected.id, { name });
     onChanged();
   });
 
   const remove = act(async () => {
-    if (!window.confirm(`"${selected.name}" silinsin mi? Bu geri alınamaz.`)) return;
+    if (!window.confirm(`Delete "${selected.name}"? This can't be undone.`)) return;
     await api.deleteVariant(selected.id);
     onChanged(variants.find((v) => v.id !== selected.id).id);
   });
@@ -61,7 +61,7 @@ export function VariantList({
       const json = JSON.parse(await file.text());
       onChanged((await api.importVariant(gameId, json)).id);
     } catch (e) {
-      onError(`İçe aktarılamadı: ${e.message}`);
+      onError(`Import failed: ${e.message}`);
     }
   };
 
@@ -81,9 +81,9 @@ export function VariantList({
   return (
     <nav className="variants">
       <div className="variants-head">
-        <span>Varyantlar</span>
+        <span>Variants</span>
         <button className="small" onClick={create}>
-          + Yeni
+          + New variant
         </button>
       </div>
       <ul>
@@ -97,7 +97,7 @@ export function VariantList({
               >
                 <span className="variant-name">{v.name}</span>
                 <span className="muted small">
-                  {count ? `${count} değişiklik` : "varsayılan"} · {formatDate(v.updatedAt)}
+                  {count ? `${count} ${count === 1 ? "change" : "changes"}` : "Default"} · {formatDate(v.updatedAt)}
                 </span>
               </button>
             </li>
@@ -106,16 +106,16 @@ export function VariantList({
       </ul>
       <div className="variant-actions">
         <button className="small" onClick={duplicate}>
-          Kopyala
+          Duplicate
         </button>
         <button className="small" onClick={rename}>
-          Yeniden adlandır
+          Rename
         </button>
         <button className="small danger" onClick={remove} disabled={variants.length < 2}>
-          Sil
+          Delete
         </button>
-        <label className="button small" title="Template dev panelinin indirdiği variant.json">
-          İçe aktar
+        <label className="button small" title="A variant.json downloaded from the template's dev panel">
+          Import
           <input
             type="file"
             accept=".json,application/json"
@@ -127,8 +127,8 @@ export function VariantList({
             }}
           />
         </label>
-        <button className="small" onClick={exportJson} title="npm run export -- --variant=… ile kullanılabilir">
-          JSON indir
+        <button className="small" onClick={exportJson} title="Works with npm run export -- --variant=…">
+          Download JSON
         </button>
       </div>
     </nav>

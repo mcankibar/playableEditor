@@ -1,14 +1,42 @@
 # Playable Studio
 
 Playable oyunlarının release'lerini toplayan, varyant düzenleyip canlı önizleyen ve reklam ağları için
-export alan editör. Şimdilik tek makinede, giriş/çıkış olmadan çalışır.
+export alan editör.
 
 ```bash
 npm install
+npm run users -- add mehmet   # ilk kullanıcı (şifre sorulur)
 npm run dev        # http://localhost:5300 — API + arayüz tek portta (Vite middleware)
 npm test           # API testleri
 npm run build && npm start   # arayüzü dist/'e derleyip üretim modunda çalıştırır
 ```
+
+## Kullanıcılar ve giriş
+
+Kayıt ekranı yok; hesapları Studio'yu çalıştıran kişi açar. Herkes aynı yetkiye sahiptir.
+
+```bash
+npm run users -- list
+npm run users -- add ayse               # şifre sorulur (en az 8 karakter)
+npm run users -- passwd ayse            # yeni şifre; açık oturumları kapatır
+npm run users -- remove ayse
+npm run users -- token mehmet laptop    # `npm run release` için publish token (bir kez gösterilir)
+npm run users -- revoke-tokens mehmet
+```
+
+- Şifreler scrypt ile saklanır. Oturum 30 gün geçerli, `HttpOnly; SameSite=Lax` cookie'de tutulur
+  (canlıda `Secure`). Veritabanında oturum ve token'ların yalnızca hash'i durur.
+- 15 dakikada 10 hatalı girişten sonra o adresten giriş 15 dakika kilitlenir.
+- Publish token'ları yalnızca release yükleyebilir (`Authorization: Bearer …`). Oyun klasöründe
+  `.env.local` dosyasına yazılır (git'e girmez):
+  ```
+  PLAYABLE_STUDIO=https://studio.sirket.com
+  PLAYABLE_STUDIO_TOKEN=pst_…
+  ```
+- `npm run dev` girişsiz çalışır (üst çubukta "Sign-in off"); `npm start` giriş ister. İkisi de
+  `STUDIO_AUTH=0/1` ile değiştirilebilir.
+- Kurulumda kullanıcı yoksa `STUDIO_ADMIN_PASSWORD` (ve isteğe bağlı `STUDIO_ADMIN_USER`, varsayılan
+  `admin`) ile ilk hesap açılır. Hesap açıldıktan sonra bu değişkenin etkisi yoktur.
 
 ## Akış
 
@@ -48,6 +76,16 @@ sürümü uymazsa yükleme reddedilir.
 
 ## Önizleme
 
+Üst çubuktan cihaz seçilir (iPhone 16 Pro Max, Galaxy S24, iPad…; boyutlar oyunun gördüğü CSS
+çözünürlüğüdür), döndürülür ya da "Özel boyut" girilir. Dynamic Island, çentik ve kamera deliği
+ekranın üstüne çizilir: oyunun o bölgelerde önemli bir şey göstermediği kontrol edilebilir. Cihaz
+değiştirmek oyunu yeniden başlatmaz, sadece boyutu değiştirir.
+
+**Select (⌖):** Açıkken oyunda üzerine gelinen parça çerçevelenir; tıklanınca sağ panelde o parça kalır:
+en üstte tıklanan şeyin görseli ("What you clicked", ör. taş için gems atlası ve kare adı), sonra parçanın
+ayarları, altta ilişkili parçalar ("Uses", "Part of", "Inside", "Behind") ("Show all" ile geri dönülür, Esc seçimi kapatır). Paneldeki bir grubun üzerine gelmek de o
+parçayı oyunda gösterir. Release'in bunu desteklemesi gerekir (template'in güncel runtime'ı ile build).
+
 Release, aynı origin'den (`/api/releases/<id>/play`) bir iframe'de önizleme modunda çalışır. Editör
 değerleri template runtime'ının önizleme protokolüyle gönderir (`{ type: "pl:preview", overrides, assets }`).
 İframe boş açılır ve değerler release yüklenmeden `window.name`'e yazılır. Böylece oyun doğrudan varyantın
@@ -55,13 +93,20 @@ değerleriyle başlar, tarayıcının yenilemede geri yüklediği eski bir `wind
 
 ## Ayarlar (ortam değişkenleri)
 
-| Değişken        | Varsayılan  | Açıklama                                             |
-| --------------- | ----------- | ---------------------------------------------------- |
-| `PORT`          | `5300`      |                                                      |
-| `HOST`          | `localhost` | LAN'dan erişim için `0.0.0.0` (henüz giriş yok!)     |
-| `PLAYABLE_DATA` | `./data`    | veritabanı ve dosyaların klasörü                     |
+| Değişken                | Varsayılan  | Açıklama                                                       |
+| ----------------------- | ----------- | -------------------------------------------------------------- |
+| `PORT`                  | `5300`      |                                                                |
+| `HOST`                  | `localhost` | sunucuda / container'da `0.0.0.0`                              |
+| `PLAYABLE_DATA`         | `./data`    | veritabanı ve dosyaların klasörü                               |
+| `STUDIO_ADMIN_USER`     | `admin`     | kullanıcı yokken açılacak ilk hesap                            |
+| `STUDIO_ADMIN_PASSWORD` |             | ⤴ şifresi                                                      |
+| `STUDIO_AUTH`           | prod'da `1` | `0`: giriş yok, herkes yerel kullanıcı (sadece yerel test)     |
+| `STUDIO_SECURE_COOKIES` | prod'da `1` | HTTPS yoksa `0` (cookie `Secure` olursa http'de çalışmaz)      |
+| `STUDIO_TRUST_PROXY`    | `0`         | reverse proxy arkasında `1` (giriş kilidi gerçek IP'yi görsün) |
 
 ## Henüz yok
 
-Giriş/yetki, varyant geçmişi (geri alma), aynı varyantı iki kişinin aynı anda düzenlemesine karşı koruma,
-export geçmişi, kullanılmayan yüklemelerin temizlenmesi, önizlemenin ayrı bir origin'de izole çalışması.
+Rol/yetki ayrımı, varyant geçmişi (geri alma), aynı varyantı iki kişinin aynı anda düzenlemesine karşı koruma,
+export geçmişi, kullanılmayan yüklemelerin temizlenmesi, önizlemenin ayrı bir origin'de izole çalışması
+(şu an release'in kodu Studio ile aynı origin'de çalışır, yani önizleyen kişinin oturumuyla API'ye
+istek atabilir; release'leri ekipteki geliştiriciler yüklediği için kabul edilebilir).

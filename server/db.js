@@ -36,9 +36,30 @@ CREATE TABLE IF NOT EXISTS assets (
   name        TEXT NOT NULL DEFAULT '',
   created_at  TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS users (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  username       TEXT NOT NULL UNIQUE COLLATE NOCASE,
+  password_hash  TEXT NOT NULL,
+  created_at     TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS sessions (
+  token_hash  TEXT PRIMARY KEY,
+  user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  expires_at  TEXT NOT NULL,
+  created_at  TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS api_tokens (
+  token_hash    TEXT PRIMARY KEY,
+  user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  label         TEXT NOT NULL DEFAULT '',
+  created_at    TEXT NOT NULL,
+  last_used_at  TEXT
+);
 `;
 
 const now = () => new Date().toISOString();
+
+const userRow = (row) => row && { id: row.id, username: row.username, createdAt: row.created_at };
 
 const variantRow = (row) =>
   row && {
@@ -185,6 +206,80 @@ export function openDb(file) {
       ).run(id, sha256, mime, size, name, now());
       return this.getAsset(id);
     },
+
+    // ── users & sessions ───────────────────────────────────────────────────
+    countUsers: () => db.prepare("SELECT COUNT(*) AS n FROM users").get().n,
+    listUsers: () => db.prepare("SELECT * FROM users ORDER BY username").all().map(userRow),
+    getUser: (id) => userRow(db.prepare("SELECT * FROM users WHERE id = ?").get(id)),
+
+    /** The user with its password hash, for login only. */
+    findLogin(username) {
+      const row = db.prepare("SELECT * FROM users WHERE username = ?").get(username);
+      return row && { user: userRow(row), passwordHash: row.password_hash };
+    },
+
+    createUser(username, passwordHash) {
+      const { lastInsertRowid } = db
+        .prepare("INSERT INTO users (username, password_hash, created_at) VALUES (?, ?, ?)")
+        .run(username, passwordHash, now());
+      return this.getUser(Number(lastInsertRowid));
+    },
+
+    /** Also signs the user out everywhere. */
+    setPassword(userId, passwordHash) {
+      return tx(() => {
+        db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+        return db.prepare("UPDATE users SET password_hash = ? WHERE id = ?").run(passwordHash, userId).changes > 0;
+      });
+    },
+
+    deleteUser: (id) => db.prepare("DELETE FROM users WHERE id = ?").run(id).changes > 0,
+
+    createSession(tokenHash, userId, expiresAt) {
+      db.prepare("DELETE FROM sessions WHERE expires_at <= ?").run(now());
+      db.prepare("INSERT INTO sessions (token_hash, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)").run(
+        tokenHash,
+        userId,
+        expiresAt,
+        now()
+      );
+    },
+
+    sessionUser(tokenHash) {
+      const row = db
+        .prepare(
+          "SELECT users.* FROM sessions JOIN users ON users.id = sessions.user_id WHERE token_hash = ? AND expires_at > ?"
+        )
+        .get(tokenHash, now());
+      return userRow(row);
+    },
+
+    deleteSession: (tokenHash) => db.prepare("DELETE FROM sessions WHERE token_hash = ?").run(tokenHash),
+
+    addApiToken(tokenHash, userId, label) {
+      db.prepare("INSERT INTO api_tokens (token_hash, user_id, label, created_at) VALUES (?, ?, ?, ?)").run(
+        tokenHash,
+        userId,
+        label,
+        now()
+      );
+    },
+
+    apiTokenUser(tokenHash) {
+      const row = db
+        .prepare("SELECT users.* FROM api_tokens JOIN users ON users.id = api_tokens.user_id WHERE token_hash = ?")
+        .get(tokenHash);
+      if (row) db.prepare("UPDATE api_tokens SET last_used_at = ? WHERE token_hash = ?").run(now(), tokenHash);
+      return userRow(row);
+    },
+
+    listApiTokens: (userId) =>
+      db
+        .prepare("SELECT label, created_at, last_used_at FROM api_tokens WHERE user_id = ? ORDER BY created_at")
+        .all(userId)
+        .map((r) => ({ label: r.label, createdAt: r.created_at, lastUsedAt: r.last_used_at })),
+
+    deleteApiTokens: (userId) => db.prepare("DELETE FROM api_tokens WHERE user_id = ?").run(userId).changes,
 
     getAsset(id) {
       const row = db.prepare("SELECT * FROM assets WHERE id = ?").get(id);

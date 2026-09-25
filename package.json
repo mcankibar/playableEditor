@@ -10,7 +10,8 @@
     "start": "NODE_ENV=production node --disable-warning=ExperimentalWarning server/index.js",
     "sync-kit": "node scripts/sync-kit.js",
     "test": "node --disable-warning=ExperimentalWarning --test tests/*.test.js",
-    "format": "prettier --write \"{server,web,scripts,tests}/**/*.{js,jsx,css}\""
+    "format": "prettier --write \"{server,web,scripts,tests}/**/*.{js,jsx,css}\"",
+    "users": "node --disable-warning=ExperimentalWarning scripts/users.js"
   },
   "engines": {
     "node": ">=22.13"

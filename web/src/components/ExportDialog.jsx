@@ -5,8 +5,8 @@ import { formatBytes } from "../format.js";
 
 const STORE_URL_NOTE = {
   always: "",
-  maybe: "store linki kampanyadan gelebilir",
-  never: "store linki kampanyadan gelir"
+  maybe: "store link may come from the campaign",
+  never: "store link comes from the campaign"
 };
 
 function remembered(key, fallback) {
@@ -76,16 +76,16 @@ export function ExportDialog({ variant, releases, releaseId, languages, defaultL
             {releases.map((r, i) => (
               <option key={r.id} value={r.id}>
                 r{r.number}
-                {i === 0 ? " (en güncel)" : ""}
+                {i === 0 ? " (latest)" : ""}
                 {r.notes ? ` · ${r.notes}` : ""}
               </option>
             ))}
           </select>
         </label>
 
-        <h4>Ağlar</h4>
+        <h4>Networks</h4>
         {!networks ? (
-          <p className="muted">Yükleniyor…</p>
+          <p className="muted">Loading…</p>
         ) : (
           <div className="check-grid">
             {networks.map((n) => (
@@ -105,19 +105,19 @@ export function ExportDialog({ variant, releases, releaseId, languages, defaultL
         )}
         <div className="row-actions">
           <button className="link" onClick={() => setPicked(new Set(networks?.map((n) => n.id)))}>
-            hepsi
+            All
           </button>
           <button className="link" onClick={() => setPicked(new Set())}>
-            hiçbiri
+            None
           </button>
         </div>
 
-        <h4>Diller</h4>
+        <h4>Languages</h4>
         <div className="check-grid langs">
           {["auto", ...languages].map((l) => (
             <label key={l} className="check">
               <input type="checkbox" checked={langs.has(l)} onChange={() => toggle(langs, setLangs, l)} />
-              <span>{l === "auto" ? "auto (cihaz dili)" : l}</span>
+              <span>{l === "auto" ? "auto (device language)" : l}</span>
             </label>
           ))}
         </div>
@@ -125,7 +125,7 @@ export function ExportDialog({ variant, releases, releaseId, languages, defaultL
         {error && <pre className="error pre">{error}</pre>}
         {result && (
           <div className="banner ok">
-            İndirildi: <span className="mono">{result.fileName}</span> ({formatBytes(result.blob.size)})
+            Downloaded: <span className="mono">{result.fileName}</span> ({formatBytes(result.blob.size)})
             {result.warnings.map((w) => (
               <div key={w} className="warn-line">
                 ! {w}
@@ -135,9 +135,11 @@ export function ExportDialog({ variant, releases, releaseId, languages, defaultL
         )}
 
         <footer>
-          <span className="muted small">{count} dosya</span>
+          <span className="muted small">
+            {count} {count === 1 ? "file" : "files"}
+          </span>
           <button className="primary" disabled={!count || busy} onClick={run}>
-            {busy ? "Hazırlanıyor…" : "Export"}
+            {busy ? "Preparing…" : "Export"}
           </button>
         </footer>
       </div>

@@ -106,6 +106,13 @@ function markerRange(html, name) {
   };
 }
 
+/** Offsets of a block (markers included) and of its content; throws if it is missing. */
+export function blockRange(html, name) {
+  const r = markerRange(html, name);
+  if (!r) throw new Error(`pl:${name} block not found — is this a playable build?`);
+  return r;
+}
+
 export function hasBlock(html, name) {
   return markerRange(html, name) !== null;
 }
