@@ -1,9 +1,14 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { api, assetUrl } from "../api.js";
 import { formatBytes } from "../format.js";
 import { ASSET_TYPES } from "../../../shared/playable/kit/fields.js";
 import { normalizeValue, toLocalized } from "../../../shared/playable/kit/resolve.js";
 import { detectMime, validateAsset } from "../../../shared/playable/kit/assets.js";
+import { BoardEditor } from "./BoardEditor.jsx";
+import { AssetLibrary } from "./AssetLibrary.jsx";
+
+// What the richer controls (board editor, asset library) need besides their own field.
+const EditorContext = createContext({ gameId: null, fields: [], overrides: {} });
 
 // Mirrors needsRestart in the template's playable/kit/runtime.js (for the ↻ hint only).
 const restartsGame = (f) =>
@@ -57,6 +62,7 @@ function readBase64(file) {
 }
 
 export function FieldPanel({
+  gameId,
   fields,
   overrides,
   check,
@@ -93,7 +99,7 @@ export function FieldPanel({
       const base64 = await readBase64(file);
       // Same check the exporter runs; the id only matters for zipped models (".zip").
       validateAsset(/\.zip$/i.test(file.name) ? "check.zip" : "check.bin", { mime, base64 }, field);
-      const asset = await api.uploadAsset(file.name, base64);
+      const asset = await api.uploadAsset(file.name, base64, gameId);
       onUploaded(asset.id, `data:${asset.mime};base64,${base64}`);
       set(field, asset.id);
     } catch (e) {
@@ -206,106 +212,108 @@ export function FieldPanel({
     });
 
   return (
-    <aside className="fields">
-      <div className="fields-head">
-        <input
-          type="search"
-          placeholder={`Search ${fields.length} ${fields.length === 1 ? "field" : "fields"}…`}
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-        />
-        <div className="fields-tools">
-          <label className="inline">
-            <input type="checkbox" checked={changedOnly} onChange={(e) => setChangedOnly(e.target.checked)} />
-            Changed only ({changedCount})
-          </label>
-          <button
-            className="small"
-            onClick={() => {
-              const lang = (window.prompt("Language code (e.g. tr, de, pt-br):") || "").trim().toLowerCase();
-              if (!lang) return;
-              if (!/^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$/.test(lang)) return onError(`Invalid language code: ${lang}`);
-              if (!languages.includes(lang)) onAddLanguage(lang);
-            }}
-          >
-            + Language
-          </button>
+    <EditorContext.Provider value={{ gameId, fields, overrides }}>
+      <aside className="fields">
+        <div className="fields-head">
+          <input
+            type="search"
+            placeholder={`Search ${fields.length} ${fields.length === 1 ? "field" : "fields"}…`}
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+          />
+          <div className="fields-tools">
+            <label className="inline">
+              <input type="checkbox" checked={changedOnly} onChange={(e) => setChangedOnly(e.target.checked)} />
+              Changed only ({changedCount})
+            </label>
+            <button
+              className="small"
+              onClick={() => {
+                const lang = (window.prompt("Language code (e.g. tr, de, pt-br):") || "").trim().toLowerCase();
+                if (!lang) return;
+                if (!/^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$/.test(lang)) return onError(`Invalid language code: ${lang}`);
+                if (!languages.includes(lang)) onAddLanguage(lang);
+              }}
+            >
+              + Language
+            </button>
+          </div>
         </div>
-      </div>
 
-      {(check.orphans.length > 0 || check.errors.length > 0) && (
-        <div className="banner warn">
-          {check.orphans.length > 0 && (
-            <div>
-              {check.orphans.length} {check.orphans.length === 1 ? "field" : "fields"} not in this release (ignored on
-              export):
-              <ul>
-                {check.orphans.map((p) => (
-                  <li key={p} className="mono">
-                    {p}
-                  </li>
-                ))}
-              </ul>
-              <button
-                className="small"
-                onClick={() => {
-                  const next = { ...overrides };
-                  check.orphans.forEach((p) => delete next[p]);
-                  onChange(next);
-                }}
-              >
-                Remove from variant
-              </button>
-            </div>
+        {(check.orphans.length > 0 || check.errors.length > 0) && (
+          <div className="banner warn">
+            {check.orphans.length > 0 && (
+              <div>
+                {check.orphans.length} {check.orphans.length === 1 ? "field" : "fields"} not in this release (ignored on
+                export):
+                <ul>
+                  {check.orphans.map((p) => (
+                    <li key={p} className="mono">
+                      {p}
+                    </li>
+                  ))}
+                </ul>
+                <button
+                  className="small"
+                  onClick={() => {
+                    const next = { ...overrides };
+                    check.orphans.forEach((p) => delete next[p]);
+                    onChange(next);
+                  }}
+                >
+                  Remove from variant
+                </button>
+              </div>
+            )}
+            {check.errors.map((e) => (
+              <div key={e} className="mono">
+                {e}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {focus && (
+          <div className="focus-bar">
+            <span>
+              <span className="muted small">Selected</span>
+              <strong>{focusLabel || focus}</strong>
+            </span>
+            <button className="small" onClick={onClearFocus}>
+              Show all
+            </button>
+          </div>
+        )}
+
+        <div className="fields-body" ref={body} onMouseLeave={() => onHoverComponent?.(null)}>
+          {nothing && <p className="muted center">No matching fields.</p>}
+
+          {clickedAssets.length > 0 && (
+            <section className="group open clicked">
+              <div className="section-title">
+                What you clicked
+                {frames.length > 0 && (
+                  <span className="muted small" title="The image is one frame of an atlas: edit the atlas files below">
+                    {" "}
+                    · frame {frames.join(", ")}
+                  </span>
+                )}
+              </div>
+              {clickedAssets.map(({ path }) => renderRow(byPath.get(path)))}
+            </section>
           )}
-          {check.errors.map((e) => (
-            <div key={e} className="mono">
-              {e}
-            </div>
-          ))}
+
+          {(focus ? selectedGroups : allGroups).map(([name, list]) => renderGroup(name, list, { forceOpen: !!focus }))}
+
+          {relatedGroups.length > 0 && (
+            <>
+              <div className="section-title related-title">Related</div>
+              {relatedGroups.map(([name, list, reason]) => renderGroup(name, list, { reason }))}
+            </>
+          )}
         </div>
-      )}
-
-      {focus && (
-        <div className="focus-bar">
-          <span>
-            <span className="muted small">Selected</span>
-            <strong>{focusLabel || focus}</strong>
-          </span>
-          <button className="small" onClick={onClearFocus}>
-            Show all
-          </button>
-        </div>
-      )}
-
-      <div className="fields-body" ref={body} onMouseLeave={() => onHoverComponent?.(null)}>
-        {nothing && <p className="muted center">No matching fields.</p>}
-
-        {clickedAssets.length > 0 && (
-          <section className="group open clicked">
-            <div className="section-title">
-              What you clicked
-              {frames.length > 0 && (
-                <span className="muted small" title="The image is one frame of an atlas: edit the atlas files below">
-                  {" "}
-                  · frame {frames.join(", ")}
-                </span>
-              )}
-            </div>
-            {clickedAssets.map(({ path }) => renderRow(byPath.get(path)))}
-          </section>
-        )}
-
-        {(focus ? selectedGroups : allGroups).map(([name, list]) => renderGroup(name, list, { forceOpen: !!focus }))}
-
-        {relatedGroups.length > 0 && (
-          <>
-            <div className="section-title related-title">Related</div>
-            {relatedGroups.map(([name, list, reason]) => renderGroup(name, list, { reason }))}
-          </>
-        )}
-      </div>
-    </aside>
+      </aside>
+    </EditorContext.Provider>
   );
 }
 
@@ -376,6 +384,8 @@ function Control({ field, value, languages, releaseId, uploads, onSet, onUpload 
       );
     }
     case "text": {
+      if (field.editor?.type === "board")
+        return <BoardControl field={field} value={value} releaseId={releaseId} uploads={uploads} onSet={onSet} />;
       if (!field.localized) return <TextInput value={value} onCommit={onSet} />;
       const map = toLocalized(value);
       return (
@@ -398,12 +408,38 @@ function Control({ field, value, languages, releaseId, uploads, onSet, onUpload 
       );
     }
     default:
-      return <AssetControl field={field} value={value} releaseId={releaseId} uploads={uploads} onUpload={onUpload} />;
+      return (
+        <AssetControl
+          field={field}
+          value={value}
+          releaseId={releaseId}
+          uploads={uploads}
+          onUpload={onUpload}
+          onSet={onSet}
+        />
+      );
   }
 }
 
-function AssetControl({ field, value, releaseId, uploads, onUpload }) {
+function BoardControl({ field, value, releaseId, uploads, onSet }) {
+  const { fields, overrides } = useContext(EditorContext);
+  return (
+    <BoardEditor
+      field={field}
+      value={value}
+      onChange={onSet}
+      fields={fields}
+      overrides={overrides}
+      releaseId={releaseId}
+      uploads={uploads}
+    />
+  );
+}
+
+function AssetControl({ field, value, releaseId, uploads, onUpload, onSet }) {
+  const { gameId } = useContext(EditorContext);
   const [busy, setBusy] = useState(false);
+  const [library, setLibrary] = useState(false);
   const src = uploads[value] || assetUrl(releaseId, value);
   const name = value.startsWith("u/") ? "uploaded file" : value.split("/").pop();
   const size = uploads[value]
@@ -437,6 +473,19 @@ function AssetControl({ field, value, releaseId, uploads, onUpload }) {
           }}
         />
       </label>
+      {gameId && (
+        <button className="small" onClick={() => setLibrary(true)} title="Use a file already uploaded for this game">
+          Library
+        </button>
+      )}
+      {library && (
+        <AssetLibrary
+          gameId={gameId}
+          field={field}
+          onPick={(asset) => onSet(asset.id)}
+          onClose={() => setLibrary(false)}
+        />
+      )}
     </div>
   );
 }

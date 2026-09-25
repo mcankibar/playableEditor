@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../api.js";
-import { download } from "./VariantList.jsx";
-import { formatBytes } from "../format.js";
+import { download, formatBytes } from "../format.js";
 
 const STORE_URL_NOTE = {
   always: "",
@@ -17,14 +16,32 @@ function remembered(key, fallback) {
   }
 }
 
-export function ExportDialog({ variant, releases, releaseId, languages, defaultLang, beforeExport, onClose }) {
+/**
+ * One variant: exported right away. Several: a background job with progress, one ZIP at the end.
+ * releaseId null (several variants) = each variant's pinned release, otherwise the latest.
+ */
+export function ExportDialog({
+  gameId,
+  variants,
+  currentVariantId,
+  releases,
+  releaseId,
+  languages,
+  defaultLang,
+  beforeExport,
+  onClose,
+  onExported
+}) {
   const [networks, setNetworks] = useState(null);
   const [picked, setPicked] = useState(() => new Set(remembered("pl-export-networks", ["default"])));
   const [langs, setLangs] = useState(() => new Set([defaultLang]));
-  const [release, setRelease] = useState(releaseId);
+  const [release, setRelease] = useState(releaseId ?? "own");
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState(null);
+  const [job, setJob] = useState(null);
   const [error, setError] = useState("");
+  const bulk = variants.length > 1;
+  const title = bulk ? `${variants.length} variants` : variants[0].name;
 
   useEffect(() => {
     api.networks().then(setNetworks, (e) => setError(e.message));
@@ -45,26 +62,52 @@ export function ExportDialog({ variant, releases, releaseId, languages, defaultL
     setBusy(true);
     setError("");
     setResult(null);
+    setJob(null);
     try {
-      await beforeExport();
+      // Export exactly what is on screen: everything saved, and the revision the server must have.
+      const revision = variants.some((v) => v.id === currentVariantId) ? await beforeExport() : undefined;
       localStorage.setItem("pl-export-networks", JSON.stringify([...picked]));
-      const out = await api.exportVariant(variant.id, { releaseId: release, networks: [...picked], langs: [...langs] });
-      download(out.fileName, out.blob);
-      setResult(out);
+      const body = { networks: [...picked], langs: [...langs], ...(release !== "own" && { releaseId: release }) };
+      if (!bulk) {
+        const v = variants[0];
+        const out = await api.exportVariant(v.id, {
+          ...body,
+          revision: v.id === currentVariantId ? revision : v.revision
+        });
+        download(out.fileName, out.blob);
+        setResult(out);
+        onExported?.();
+        return;
+      }
+      let j = await api.startExportJob(gameId, { ...body, variantIds: variants.map((v) => v.id) });
+      setJob(j);
+      while (j.state === "queued" || j.state === "running") {
+        await new Promise((r) => setTimeout(r, 700));
+        j = await api.job(j.id);
+        setJob(j);
+      }
+      if (j.state === "failed") throw new Error(j.error);
+      const file = await api.downloadJob(j.id);
+      download(file.fileName, file.blob);
+      setResult({
+        ...file,
+        warnings: [...new Set(j.results.flatMap((r) => (r.error ? [`${r.name}: ${r.error}`] : r.warnings)))]
+      });
+      onExported?.();
     } catch (e) {
-      setError(e.message);
+      setError(e.status === 409 ? `${e.message}` : e.message);
     } finally {
       setBusy(false);
     }
   }
 
-  const count = picked.size * langs.size;
+  const count = picked.size * langs.size * variants.length;
 
   return (
     <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
       <div className="modal" role="dialog" aria-label="Export">
         <header>
-          <strong>Export · {variant.name}</strong>
+          <strong>Export · {title}</strong>
           <button className="link" onClick={onClose}>
             ✕
           </button>
@@ -72,7 +115,11 @@ export function ExportDialog({ variant, releases, releaseId, languages, defaultL
 
         <label className="inline">
           Release
-          <select value={release} onChange={(e) => setRelease(Number(e.target.value))}>
+          <select
+            value={release}
+            onChange={(e) => setRelease(e.target.value === "own" ? "own" : Number(e.target.value))}
+          >
+            {bulk && <option value="own">Each variant's release (pinned, else latest)</option>}
             {releases.map((r, i) => (
               <option key={r.id} value={r.id}>
                 r{r.number}
@@ -122,6 +169,13 @@ export function ExportDialog({ variant, releases, releaseId, languages, defaultL
           ))}
         </div>
 
+        {bulk && <p className="muted small">{variants.map((v) => v.name).join(", ")}</p>}
+        {job && busy && (
+          <div className="job">
+            <span>{job.state === "queued" ? "Waiting…" : `Packaging ${job.done} / ${job.total}`}</span>
+            <progress max={job.total} value={job.done} />
+          </div>
+        )}
         {error && <pre className="error pre">{error}</pre>}
         {result && (
           <div className="banner ok">
@@ -139,7 +193,7 @@ export function ExportDialog({ variant, releases, releaseId, languages, defaultL
             {count} {count === 1 ? "file" : "files"}
           </span>
           <button className="primary" disabled={!count || busy} onClick={run}>
-            {busy ? "Preparing…" : "Export"}
+            {busy ? "Preparing…" : bulk ? "Export all" : "Export"}
           </button>
         </footer>
       </div>

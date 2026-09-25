@@ -4,6 +4,80 @@ import { api } from "../api.js";
 import { gameHash, navigate } from "../App.jsx";
 import { formatBytes, formatDate } from "../format.js";
 
+/** Backups and clean-up of files nothing uses any more. */
+function StoragePanel({ onError }) {
+  const [info, setInfo] = useState(null);
+  const [busy, setBusy] = useState("");
+  const [note, setNote] = useState("");
+  useEffect(() => {
+    api.maintenance().then(setInfo, (e) => onError(e.message));
+  }, [onError]);
+
+  const run = (what, fn) => async () => {
+    setBusy(what);
+    setNote("");
+    try {
+      await fn();
+    } catch (e) {
+      onError(e.message);
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const [last] = info?.backups ?? [];
+  return (
+    <section className="storage">
+      <h3>Storage</h3>
+      {!info ? (
+        <p className="muted">Loading…</p>
+      ) : (
+        <>
+          <p className="small">
+            {info.backupDir ? (
+              <>
+                Daily backup to <span className="mono">{info.backupDir}</span> —{" "}
+                {last ? `last ${formatDate(last.createdAt)}, ${info.backups.length} kept` : "none yet"}.
+              </>
+            ) : (
+              "Backups are off (set STUDIO_BACKUP_DIR)."
+            )}
+          </p>
+          <div className="row-actions">
+            {info.backupDir && (
+              <button
+                className="small"
+                disabled={!!busy}
+                onClick={run("backup", async () => {
+                  const out = await api.backupNow();
+                  setInfo((i) => ({ ...i, backups: out.backups }));
+                  setNote("Backup written.");
+                })}
+              >
+                {busy === "backup" ? "Backing up…" : "Back up now"}
+              </button>
+            )}
+            <button
+              className="small"
+              disabled={!!busy}
+              title="Removes uploaded files that no variant, history entry, export or game library uses (older than a day)"
+              onClick={run("gc", async () => {
+                const out = await api.collectGarbage();
+                setNote(
+                  `Removed ${out.assets} unused ${out.assets === 1 ? "file" : "files"} (${formatBytes(out.bytes)}).`
+                );
+              })}
+            >
+              {busy === "gc" ? "Cleaning…" : "Clean up unused files"}
+            </button>
+            {note && <span className="muted small">{note}</span>}
+          </div>
+        </>
+      )}
+    </section>
+  );
+}
+
 export function GameList() {
   const [games, setGames] = useState(null);
   const [error, setError] = useState("");
@@ -52,10 +126,28 @@ export function GameList() {
                     {g.variantCount} {g.variantCount === 1 ? "variant" : "variants"}
                   </span>
                 </a>
+                <button
+                  className="link small danger game-delete"
+                  onClick={async () => {
+                    const typed = window.prompt(
+                      `Delete "${g.title}" with all its releases, variants, history and export records?\nType the game id to confirm: ${g.id}`
+                    );
+                    if (typed !== g.id) return;
+                    try {
+                      await api.deleteGame(g.id);
+                      load();
+                    } catch (e) {
+                      setError(e.message);
+                    }
+                  }}
+                >
+                  Delete game
+                </button>
               </li>
             ))}
           </ul>
         )}
+        <StoragePanel onError={setError} />
       </main>
     </div>
   );

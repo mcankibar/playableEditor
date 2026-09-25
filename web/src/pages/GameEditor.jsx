@@ -1,38 +1,44 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { UserMenu } from "../auth.jsx";
-import { api } from "../api.js";
+import { api, assetDataUri } from "../api.js";
 import { gameHash, navigate } from "../App.jsx";
 import { ReleaseDrop } from "./GameList.jsx";
+import { useVariantSync } from "./useVariantSync.js";
 import { FieldPanel } from "../components/FieldPanel.jsx";
 import { Preview } from "../components/Preview.jsx";
 import { ExportDialog } from "../components/ExportDialog.jsx";
 import { VariantList } from "../components/VariantList.jsx";
+import { ConflictDialog } from "../components/ConflictDialog.jsx";
+import { HistoryPanel } from "../components/HistoryPanel.jsx";
+import { ExportsPanel } from "../components/ExportsPanel.jsx";
+import { ReleasesDialog } from "../components/ReleasesDialog.jsx";
+import { SizeMeter } from "../components/SizeMeter.jsx";
+import { Playtest } from "../components/Playtest.jsx";
 import { collectLanguages, sanitizeOverrides } from "../../../shared/playable/kit/resolve.js";
 import { formatDate } from "../format.js";
 
-const SAVE_DELAY = 500;
+// Other people's edits show up within this time.
+const POLL_MS = 8000;
 
 export function GameEditor({ gameId, variantId }) {
   const [data, setData] = useState(null); // { game, releases, variants }
   const [releaseId, setReleaseId] = useState(null);
   const [manifest, setManifest] = useState(null);
-  const [overrides, setOverrides] = useState({});
   const [uploads, setUploads] = useState({}); // asset id → data URI (uploaded files only)
-  const [loadedVariant, setLoadedVariant] = useState(null); // id whose values + uploads are in state
-  const [saveState, setSaveState] = useState("saved");
+  const [loadedVariant, setLoadedVariant] = useState(null); // id whose uploads are in state
   const [extraLangs, setExtraLangs] = useState([]);
   const [previewLang, setPreviewLang] = useState("");
   // What was picked in the preview ({ componentId, related, assets }) and the component to outline.
   const [selection, setSelection] = useState(null);
   const [outline, setOutline] = useState(null);
-  const [exporting, setExporting] = useState(false);
+  const [dialog, setDialog] = useState(null); // { type: "export" | "releases" | "playtest", ... }
+  const [drawer, setDrawer] = useState(null); // "history" | "exports"
   const [error, setError] = useState("");
 
   const load = useCallback(
     () =>
       api.game(gameId).then((d) => {
         setData(d);
-        setReleaseId((current) => (d.releases.some((r) => r.id === current) ? current : (d.releases[0]?.id ?? null)));
         return d;
       }),
     [gameId]
@@ -41,41 +47,31 @@ export function GameEditor({ gameId, variantId }) {
     load().catch((e) => setError(e.message));
   }, [load]);
 
+  const variant = data && (data.variants.find((v) => v.id === variantId) ?? data.variants[0]);
+  const latest = data?.releases[0];
+
+  // A variant opens on its pinned release, otherwise the latest (also when a new release arrives).
+  useEffect(() => {
+    if (!data || !variant) return;
+    setReleaseId(variant.pinnedReleaseId ?? latest?.id ?? null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [variant?.id, variant?.pinnedReleaseId, latest?.id]);
+
   useEffect(() => {
     if (!releaseId) return;
     setManifest(null);
     api.manifest(releaseId).then(setManifest, (e) => setError(e.message));
   }, [releaseId]);
 
-  const variant = data && (data.variants.find((v) => v.id === variantId) ?? data.variants[0]);
-
-  // ── editing + autosave ─────────────────────────────────────────────────
-  const timer = useRef(null);
-  const latest = useRef({ id: null, overrides: {} });
-
-  const save = useCallback(async (id, next) => {
-    clearTimeout(timer.current);
-    timer.current = null;
-    setSaveState("saving");
-    try {
-      const saved = await api.updateVariant(id, { overrides: next });
-      setData((d) => d && { ...d, variants: d.variants.map((v) => (v.id === saved.id ? saved : v)) });
-      setSaveState((s) => (timer.current ? s : "saved"));
-    } catch (e) {
-      setSaveState("error");
-      setError(`Save failed: ${e.message}`);
-    }
-  }, []);
-
-  const flush = useCallback(() => {
-    if (timer.current) save(latest.current.id, latest.current.overrides);
-  }, [save]);
+  const replaceVariant = useCallback(
+    (saved) => setData((d) => d && { ...d, variants: d.variants.map((v) => (v.id === saved.id ? saved : v)) }),
+    []
+  );
+  const sync = useVariantSync({ variant, releaseId, onSaved: replaceVariant, onError: setError });
+  const overrides = sync.overrides;
 
   useEffect(() => {
     if (!variant) return;
-    setOverrides(variant.overrides);
-    latest.current = { id: variant.id, overrides: variant.overrides };
-    setSaveState("saved");
     setUploads({});
     setLoadedVariant(null);
     let current = true;
@@ -89,24 +85,59 @@ export function GameEditor({ gameId, variantId }) {
     );
     return () => {
       current = false;
-      flush();
     };
-    // Only a variant switch resets the editor; server echoes of our own saves must not.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [variant?.id]);
 
+  // Uploaded files the values point at but the editor doesn't have yet — picked from the library,
+  // set by someone else, or brought back from the history — are fetched for the preview.
+  const fetching = useRef(new Set());
   useEffect(() => {
-    window.addEventListener("beforeunload", flush);
-    return () => window.removeEventListener("beforeunload", flush);
-  }, [flush]);
+    if (!variant || loadedVariant !== variant.id) return;
+    const missing = new Set(
+      Object.values(overrides).filter(
+        (v) => typeof v === "string" && v.startsWith("u/") && !uploads[v] && !fetching.current.has(v)
+      )
+    );
+    for (const id of missing) {
+      fetching.current.add(id);
+      assetDataUri(id)
+        .then(
+          (uri) => setUploads((u) => ({ ...u, [id]: uri })),
+          (e) => setError(`Couldn't load an uploaded file: ${e.message}`)
+        )
+        .finally(() => fetching.current.delete(id));
+    }
+  }, [overrides, uploads, loadedVariant, variant?.id]);
 
-  function changeOverrides(next) {
-    setOverrides(next);
-    latest.current = { id: variant.id, overrides: next };
-    setSaveState("dirty");
-    clearTimeout(timer.current);
-    timer.current = setTimeout(() => save(variant.id, next), SAVE_DELAY);
-  }
+  // Poll: new variants, renames and other people's edits of this variant.
+  const syncRef = useRef(sync);
+  syncRef.current = sync;
+  useEffect(() => {
+    const refresh = () => {
+      if (document.visibilityState !== "visible") return;
+      api.game(gameId).then(
+        (d) => {
+          const s = syncRef.current;
+          const server = d.variants.find((v) => v.id === variant?.id);
+          // The edited variant is replaced only by a newer revision than the editor's.
+          setData((cur) => ({
+            ...d,
+            variants: d.variants.map((v) =>
+              v.id === server?.id && server.revision <= s.revision ? (cur?.variants.find((c) => c.id === v.id) ?? v) : v
+            )
+          }));
+          s.applyRemote(server);
+        },
+        () => {}
+      );
+    };
+    const timer = setInterval(refresh, POLL_MS);
+    window.addEventListener("focus", refresh);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener("focus", refresh);
+    };
+  }, [gameId, variant?.id]);
 
   // ── derived ────────────────────────────────────────────────────────────
   const fields = useMemo(() => manifest?.fields.map((f) => ({ aliases: [], ...f })) ?? [], [manifest]);
@@ -123,17 +154,40 @@ export function GameEditor({ gameId, variantId }) {
     if (previewLang && languageField) out[languageField.path] = previewLang;
     return out;
   }, [check.values, previewLang, languageField]);
-  const previewAssets = useMemo(() => {
-    const out = {};
-    Object.values(previewOverrides).forEach((v) => {
-      if (typeof v === "string" && uploads[v]) out[v] = uploads[v];
-    });
-    return out;
-  }, [previewOverrides, uploads]);
+  const usedUploads = useCallback(
+    (values) => {
+      const out = {};
+      Object.values(values).forEach((v) => {
+        if (typeof v === "string" && uploads[v]) out[v] = uploads[v];
+      });
+      return out;
+    },
+    [uploads]
+  );
+  const previewAssets = useMemo(() => usedUploads(previewOverrides), [previewOverrides, usedUploads]);
 
   if (error && !data) return <FullPageError message={error} />;
   if (!data) return <div className="page center muted">Loading…</div>;
   const release = data.releases.find((r) => r.id === releaseId);
+  const beforeExport = async () => {
+    if (!(await sync.flush())) throw new Error("Some changes aren't saved yet — resolve the save problem first.");
+    return sync.revision;
+  };
+  // Other variants' uploaded files are fetched first; the open one uses what is on screen.
+  const openPlaytest = async (list) => {
+    try {
+      const variants = await Promise.all(
+        list.map(async (v) =>
+          v.id === variant.id
+            ? { ...v, overrides: check.values, uploads: previewAssets, revision: sync.revision }
+            : { ...v, uploads: await api.variantUploads(v.id) }
+        )
+      );
+      setDialog({ type: "playtest", variants });
+    } catch (e) {
+      setError(e.message);
+    }
+  };
 
   return (
     <div className="page editor">
@@ -152,22 +206,47 @@ export function GameEditor({ gameId, variantId }) {
           {data.releases.map((r, i) => (
             <option key={r.id} value={r.id}>
               r{r.number}
-              {i === 0 ? " (latest)" : ""} · {formatDate(r.createdAt)}
+              {i === 0 ? " (latest)" : ""}
+              {r.id === variant.pinnedReleaseId ? " · pinned" : ""} · {formatDate(r.createdAt)}
               {r.notes ? ` · ${r.notes}` : ""}
             </option>
           ))}
         </select>
-        <ReleaseDrop
-          compact
-          onUploaded={({ release: r, created }) => {
-            load().then(() => setReleaseId(r.id));
-            if (!created) setError(`This build is already uploaded (r${r.number}).`);
-          }}
-          onError={setError}
-        />
+        <button
+          className="small"
+          onClick={() => setDialog({ type: "releases" })}
+          title="Upload, pin or delete releases"
+        >
+          Releases
+        </button>
         <span className="spacer" />
-        <SaveBadge state={saveState} />
-        <button className="primary" disabled={!manifest} onClick={() => setExporting(true)}>
+        <SizeMeter releaseId={releaseId} overrides={check.values} />
+        <SaveBadge state={sync.state} variant={variant} />
+        <button
+          className={`small${drawer === "history" ? " active" : ""}`}
+          onClick={() => setDrawer(drawer === "history" ? null : "history")}
+        >
+          History
+        </button>
+        <button
+          className={`small${drawer === "exports" ? " active" : ""}`}
+          onClick={() => setDrawer(drawer === "exports" ? null : "exports")}
+        >
+          Exports
+        </button>
+        <button
+          className="small"
+          disabled={!release}
+          onClick={() => openPlaytest([variant])}
+          title="Let a bot play this variant"
+        >
+          Playtest
+        </button>
+        <button
+          className="primary"
+          disabled={!manifest}
+          onClick={() => setDialog({ type: "export", variantIds: [variant.id] })}
+        >
           Export…
         </button>
         <UserMenu />
@@ -181,21 +260,37 @@ export function GameEditor({ gameId, variantId }) {
           </button>
         </div>
       )}
+      <ReleaseBanner
+        variant={variant}
+        latest={latest}
+        releases={data.releases}
+        fields={fields}
+        releaseId={releaseId}
+        orphans={check.orphans}
+        onPlaytest={() => openPlaytest([variant])}
+        onChecked={() =>
+          api.patchVariant(variant.id, { baseReleaseId: latest.id }).then(replaceVariant, (e) => setError(e.message))
+        }
+      />
 
       <div className="editor-body">
         <VariantList
           gameId={gameId}
           variants={data.variants}
+          releases={data.releases}
           selectedId={variant.id}
           overrides={overrides}
           uploads={uploads}
+          latestReleaseId={latest?.id}
           onSelect={(id) => navigate(gameHash(gameId, id))}
           onChanged={async (selectId) => {
             await load();
             if (selectId) navigate(gameHash(gameId, selectId));
           }}
           onError={setError}
-          beforeChange={flush}
+          beforeChange={() => sync.flush()}
+          onExport={(ids) => setDialog({ type: "export", variantIds: ids })}
+          onPlaytest={(ids) => openPlaytest(data.variants.filter((v) => ids.includes(v.id)))}
         />
 
         {manifest && loadedVariant === variant.id ? (
@@ -215,8 +310,24 @@ export function GameEditor({ gameId, variantId }) {
           <section className="preview" />
         )}
 
-        {manifest ? (
+        {drawer === "history" ? (
+          <HistoryPanel
+            variant={variant}
+            fields={fields}
+            onRestore={async (revision) => {
+              await sync.flush();
+              const saved = await api.restore(variant.id, revision);
+              replaceVariant(saved);
+              sync.applyRemote(saved);
+            }}
+            onError={setError}
+            onClose={() => setDrawer(null)}
+          />
+        ) : drawer === "exports" ? (
+          <ExportsPanel gameId={gameId} onError={setError} onClose={() => setDrawer(null)} />
+        ) : manifest ? (
           <FieldPanel
+            gameId={gameId}
             fields={fields}
             overrides={overrides}
             check={check}
@@ -224,7 +335,7 @@ export function GameEditor({ gameId, variantId }) {
             uploads={uploads}
             languages={languages}
             onAddLanguage={(lang) => setExtraLangs((l) => [...l, lang])}
-            onChange={changeOverrides}
+            onChange={sync.change}
             onUploaded={(id, dataUri) => setUploads((u) => ({ ...u, [id]: dataUri }))}
             onError={setError}
             selection={selection}
@@ -236,24 +347,113 @@ export function GameEditor({ gameId, variantId }) {
         )}
       </div>
 
-      {exporting && (
+      {sync.conflict && <ConflictDialog conflict={sync.conflict} fields={fields} onResolve={sync.resolve} />}
+
+      {dialog?.type === "export" && (
         <ExportDialog
-          variant={{ ...variant, overrides }}
+          gameId={gameId}
+          variants={data.variants
+            .filter((v) => dialog.variantIds.includes(v.id))
+            .map((v) => (v.id === variant.id ? { ...v, overrides } : v))}
+          currentVariantId={variant.id}
           releases={data.releases}
-          releaseId={releaseId}
+          releaseId={dialog.variantIds.length === 1 ? releaseId : null}
           languages={languages}
           defaultLang={languageField ? (check.values[languageField.path] ?? languageField.default) : "auto"}
-          beforeExport={() => (timer.current ? save(variant.id, latest.current.overrides) : null)}
-          onClose={() => setExporting(false)}
+          beforeExport={beforeExport}
+          onClose={() => setDialog(null)}
+          onExported={() => drawer === "exports" && setDrawer("exports")}
+        />
+      )}
+      {dialog?.type === "releases" && (
+        <ReleasesDialog
+          gameId={gameId}
+          releases={data.releases}
+          variant={variant}
+          variants={data.variants}
+          onChanged={async (pick) => {
+            const d = await load();
+            if (pick) setReleaseId(pick);
+            return d;
+          }}
+          onPin={async (id) => replaceVariant(await api.patchVariant(variant.id, { pinnedReleaseId: id }))}
+          onError={setError}
+          onClose={() => setDialog(null)}
+        />
+      )}
+      {dialog?.type === "playtest" && release && (
+        <Playtest
+          releaseId={releaseId}
+          release={release}
+          variants={dialog.variants.map((v) => ({
+            id: v.id,
+            name: v.name,
+            revision: v.revision,
+            overrides: v.overrides,
+            uploads: v.uploads
+          }))}
+          onClose={() => setDialog(null)}
+          onResult={async (id, result) => {
+            try {
+              replaceVariant(await api.savePlaytest(id, result));
+              // A clean run on the latest release counts as checked.
+              const v = data.variants.find((x) => x.id === id);
+              const ok = result.check ? result.check === "ok" : !result.errors?.length;
+              if (ok && result.releaseId === latest?.id && v && v.baseReleaseId !== latest.id)
+                replaceVariant(await api.patchVariant(id, { baseReleaseId: latest.id }));
+            } catch (e) {
+              setError(e.message);
+            }
+          }}
         />
       )}
     </div>
   );
 }
 
-function SaveBadge({ state }) {
-  const text = { saved: "Saved", dirty: "Unsaved changes", saving: "Saving…", error: "Save failed" }[state];
-  return <span className={`save-badge ${state}`}>{text}</span>;
+/** A release newer than the one this variant was last edited or checked with. */
+function ReleaseBanner({ variant, latest, releases, releaseId, orphans, onPlaytest, onChecked }) {
+  if (!latest || variant.pinnedReleaseId) return null;
+  const base = releases.find((r) => r.id === variant.baseReleaseId);
+  if (!base || base.id >= latest.id) return null;
+  return (
+    <div className="banner info">
+      <strong>r{latest.number} is new</strong> since this variant was last edited or checked (r{base.number}).
+      {releaseId === latest.id && orphans.length > 0 && (
+        <span title={orphans.join("\n")}>
+          {" "}
+          {orphans.length} changed {orphans.length === 1 ? "field doesn't" : "fields don't"} exist any more.
+        </span>
+      )}{" "}
+      Check it on r{latest.number}, then mark it as checked.
+      <span className="spacer" />
+      <button className="small" onClick={onPlaytest}>
+        Playtest
+      </button>
+      <button className="small" onClick={onChecked}>
+        Mark as checked
+      </button>
+    </div>
+  );
+}
+
+function SaveBadge({ state, variant }) {
+  const text = {
+    saved: "Saved",
+    dirty: "Unsaved changes",
+    saving: "Saving…",
+    error: "Save failed",
+    conflict: "Conflict"
+  }[state];
+  const by = variant.updatedBy ? ` by ${variant.updatedBy}` : "";
+  return (
+    <span
+      className={`save-badge ${state}`}
+      title={`Revision ${variant.revision} · last change${by} ${formatDate(variant.updatedAt)}`}
+    >
+      {text}
+    </span>
+  );
 }
 
 function FullPageError({ message }) {
