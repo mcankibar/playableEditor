@@ -50,8 +50,56 @@ npm run users -- revoke-tokens mehmet
    iner. Çıktılar template'teki `npm run export` ile birebir aynıdır.
 
 Varyant release'e değil oyuna bağlıdır: yeni release geldiğinde varyantlar olduğu gibi yeni sürüme uygulanır.
-Yeni release'te artık olmayan alanlar editörde uyarı olarak görünür ve export'ta yok sayılır. Eski bir
-release, üst çubuktan seçilerek önizlenebilir ve export edilebilir.
+Her varyant en son hangi release ile düzenlendiğini/kontrol edildiğini saklar; daha yeni bir release varsa
+listede "New release — check" ve editörde bir uyarı çıkar (artık olmayan alanlarla birlikte). "Playtest" ile
+denenir, "Mark as checked" ile kapatılır; son release'te hatasız bir playtest de kontrol sayılır. Bir varyant
+**Releases** penceresinden bir release'e sabitlenebilir (pin): o zaman önizleme ve export o release'i kullanır.
+
+## Birlikte çalışma
+
+- **Kayıt:** Editör sadece değişen alanları, başladığı revizyonla birlikte gönderir. İki kişi aynı varyantın
+  farklı alanlarını düzenlerse ikisi de kaydedilir; açık editörler diğerinin değişikliğini ~8 sn içinde görür.
+  Aynı alanı başkası değiştirdiyse "Conflicting changes" penceresi çıkar: _Keep mine_ / _Take theirs_.
+- **Geçmiş (History):** Her düzenleme oturumu (aynı kişinin 10 dk içindeki kayıtları) bir kayıttır; ne değiştiği
+  görülür, herhangi biri "Restore" ile geri getirilir (geri getirme de geçmişe yazılır).
+- **Export:** Ekrandaki revizyonla yapılır; kaydedilmemiş değişiklik varsa önce kaydedilir, sunucudaki varyant
+  farklıysa export reddedilir. Her export kaydedilir (kim, hangi revizyon, release, ağ, dil) ve **Exports**
+  panelinden "Download again" ile aynı dosya yeniden üretilir (bayt bayt aynı olduğu kontrol edilir).
+- **Toplu export:** Listede varyantlar işaretlenip "Export…" ile hepsi ağ × dil için arka planda paketlenir;
+  ilerleme görünür, sonunda tek ZIP (varyant başına bir klasör + `export-summary.json`) iner. Paketleme
+  worker thread'lerde çalışır, API'yi bloklamaz.
+- **Kütüphane:** Arama (ad, etiket, kişi), durum (Draft / In review / Approved / Live) ve etiket filtreleri;
+  işaretlenen varyantlara toplu durum/etiket. Yeni / kopya / ayrıntılar bir formla düzenlenir.
+- **Asset kütüphanesi:** Bir oyun için yüklenen her dosya o oyunun kütüphanesine girer; görsel alanlarındaki
+  "Library" ile başka varyantta tekrar kullanılır.
+- **Boyut:** Üst çubuktaki gösterge, varyantın her ağdaki paket boyutunu anlık tahmin eder (kapalı parçalar
+  hariç); tıklanınca ağ ağ listeler. HTML ağları kesin, ZIP ağları yaklaşık.
+
+## Level editörü ve Playtest
+
+- Oyun bir level alanına `editor: { type: "board", palette: [...] }` verirse (Match Squad'da `levelString`),
+  alan ızgara olarak düzenlenir: paletten seç, boya (sağ tık / Alt+tık: damlalık), satır/sütun, level ekle/sil,
+  başlangıç eşleşmeleri kırmızı, "Random fill" eşleşmesiz doldurur, "Text" ham metni gösterir. Palet görselleri
+  varyantın kendi atlaslarından gelir (taş seti değişirse editör de değişir).
+- **Playtest:** Oyun `registerBot(...)` ile bir bot adaptörü veriyorsa (template runtime'ı, "Bot playtest"),
+  Studio varyantı gizli bir önizlemede hızlandırılmış olarak N kez oynatır: kazanma oranı, zorluk etiketi,
+  kalan hamle, hatalar. Sonuç varyanta kaydedilir ve listede görünür. Birden fazla varyant seçilince "Check",
+  her birini kısa oynatıp yeni release'te yüklenip hatasız çalıştığını doğrular. Adaptörü olmayan oyunlarda
+  "This game doesn't support playtesting yet" yazar.
+
+## Yedek ve depolama
+
+Sunucu açıkken günde bir yedek alınır (`STUDIO_BACKUP_DIR`, varsayılan `data/` yanındaki `backups/`):
+`db/studio-<gün>.db` (son 14 gün) + `releases/` ve `assets/` (bir kez kopyalanır, dosyalar değişmez).
+Ana sayfadaki **Storage** bölümünde son yedek, "Back up now" ve "Clean up unused files" (hiçbir varyant,
+geçmiş kaydı, export kaydı ya da kütüphanenin kullanmadığı, bir günden eski yüklemeleri siler) vardır.
+
+Geri yükleme: Studio'yu durdur, `db/studio-<gün>.db` → `<data>/studio.db`, `releases/` ve `assets/` →
+`<data>/` kopyala, başlat. Yedek klasörünü başka bir diske (ya da senkronize bir klasöre) koy; aynı disk
+bozulursa yedek de gider.
+
+Silme: release'ler (son release ve sabitlenmiş olanlar hariç) Releases penceresinden, oyunlar ana sayfadan
+(oyun kimliği yazılarak onaylanır) silinir.
 
 Template dev panelinin indirdiği `variant.json` dosyaları "İçe aktar" ile alınabilir. "JSON indir" aynı
 formatta dosya verir: `npm run export -- --variant=...` ile kullanılabilir.
@@ -93,20 +141,22 @@ değerleriyle başlar, tarayıcının yenilemede geri yüklediği eski bir `wind
 
 ## Ayarlar (ortam değişkenleri)
 
-| Değişken                | Varsayılan  | Açıklama                                                       |
-| ----------------------- | ----------- | -------------------------------------------------------------- |
-| `PORT`                  | `5300`      |                                                                |
-| `HOST`                  | `localhost` | sunucuda / container'da `0.0.0.0`                              |
-| `PLAYABLE_DATA`         | `./data`    | veritabanı ve dosyaların klasörü                               |
-| `STUDIO_ADMIN_USER`     | `admin`     | kullanıcı yokken açılacak ilk hesap                            |
-| `STUDIO_ADMIN_PASSWORD` |             | ⤴ şifresi                                                      |
-| `STUDIO_AUTH`           | prod'da `1` | `0`: giriş yok, herkes yerel kullanıcı (sadece yerel test)     |
-| `STUDIO_SECURE_COOKIES` | prod'da `1` | HTTPS yoksa `0` (cookie `Secure` olursa http'de çalışmaz)      |
-| `STUDIO_TRUST_PROXY`    | `0`         | reverse proxy arkasında `1` (giriş kilidi gerçek IP'yi görsün) |
+| Değişken                | Varsayılan                  | Açıklama                                                       |
+| ----------------------- | --------------------------- | -------------------------------------------------------------- |
+| `PORT`                  | `5300`                      |                                                                |
+| `HOST`                  | `localhost`                 | sunucuda / container'da `0.0.0.0`                              |
+| `PLAYABLE_DATA`         | `./data`                    | veritabanı ve dosyaların klasörü                               |
+| `STUDIO_ADMIN_USER`     | `admin`                     | kullanıcı yokken açılacak ilk hesap                            |
+| `STUDIO_ADMIN_PASSWORD` |                             | ⤴ şifresi                                                      |
+| `STUDIO_AUTH`           | prod'da `1`                 | `0`: giriş yok, herkes yerel kullanıcı (sadece yerel test)     |
+| `STUDIO_SECURE_COOKIES` | prod'da `1`                 | HTTPS yoksa `0` (cookie `Secure` olursa http'de çalışmaz)      |
+| `STUDIO_TRUST_PROXY`    | `0`                         | reverse proxy arkasında `1` (giriş kilidi gerçek IP'yi görsün) |
+| `STUDIO_BACKUP_DIR`     | `../backups` (data'ya göre) | günlük yedeklerin klasörü; başka bir disk önerilir             |
+| `STUDIO_BACKUP_KEEP`    | `14`                        | tutulacak günlük veritabanı kopyası                            |
+| `STUDIO_BACKUP`         | `1`                         | `0`: yedek kapalı                                              |
 
 ## Henüz yok
 
-Rol/yetki ayrımı, varyant geçmişi (geri alma), aynı varyantı iki kişinin aynı anda düzenlemesine karşı koruma,
-export geçmişi, kullanılmayan yüklemelerin temizlenmesi, önizlemenin ayrı bir origin'de izole çalışması
+Rol/yetki ayrımı, varyant kartlarında önizleme görüntüsü, önizlemenin ayrı bir origin'de izole çalışması
 (şu an release'in kodu Studio ile aynı origin'de çalışır, yani önizleyen kişinin oturumuyla API'ye
 istek atabilir; release'leri ekipteki geliştiriciler yüklediği için kabul edilebilir).
