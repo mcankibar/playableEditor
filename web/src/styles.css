@@ -23,6 +23,24 @@
     sans-serif;
 }
 
+html[data-theme="dark"] {
+  --bg: #141012;
+  --panel: #211b1d;
+  --panel-2: #2b2325;
+  --line: #3d3336;
+  --text: #f6eeee;
+  --muted: #b5a4a7;
+  --accent: #e43348;
+  --accent-strong: #ff8b96;
+  --accent-soft: #3d2428;
+  --on-accent: #ffffff;
+  --changed: #f0a45a;
+  --danger: #ff8b96;
+  --ok: #4dcc84;
+  --stage: #0e0c0d;
+  color-scheme: dark;
+}
+
 * {
   box-sizing: border-box;
 }
@@ -695,6 +713,38 @@ input[type="color"] {
   font-size: 12px;
 }
 
+.theme-switch {
+  width: 36px;
+  height: 20px;
+  padding: 2px;
+  border-radius: 10px;
+  justify-content: flex-start;
+  flex: none;
+}
+.theme-switch span {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.theme-switch.on {
+  justify-content: flex-end;
+}
+.topbar .theme-switch {
+  padding: 2px;
+  background: rgb(255 255 255 / 0.2);
+}
+.login-page {
+  position: relative;
+}
+.login-page > .theme-switch {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  background: var(--on-accent);
+  color: var(--accent);
+}
+
 /* ── sign-in ───────────────────────────────────────────── */
 .user-menu {
   display: inline-flex;
@@ -894,8 +944,8 @@ input[type="color"] {
   display: flex;
   align-items: center;
   gap: 8px;
-  background: #fff7e6;
-  border-bottom: 1px solid #f3dca6;
+  background: color-mix(in srgb, var(--changed) 16%, var(--panel));
+  border-bottom: 1px solid color-mix(in srgb, var(--changed) 45%, var(--line));
   padding: 6px 14px;
 }
 .banner.info .spacer {
@@ -1134,11 +1184,11 @@ label.stack select {
   vertical-align: 1px;
 }
 .status-review {
-  background: #fff1d6;
-  color: #9a5b00;
+  background: color-mix(in srgb, var(--changed) 22%, var(--panel));
+  color: var(--changed);
 }
 .status-approved {
-  background: #e3f5ea;
+  background: color-mix(in srgb, var(--ok) 18%, var(--panel));
   color: var(--ok);
 }
 .status-live {
@@ -1274,7 +1324,7 @@ label.stack select {
 .experiment-table th {
   padding: 8px;
   text-align: left;
-  border-bottom: 1px solid #444;
+  border-bottom: 1px solid var(--line);
   max-width: 300px;
   overflow-wrap: anywhere;
 }
@@ -1312,7 +1362,7 @@ label.stack select {
   display: grid;
   gap: 5px;
   padding: 8px;
-  border-bottom: 1px solid #444;
+  border-bottom: 1px solid var(--line);
 }
 .recipe-results code {
   white-space: pre-wrap;

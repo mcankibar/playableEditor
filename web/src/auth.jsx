@@ -1,7 +1,26 @@
 import { createContext, useContext, useState } from "react";
 import { api } from "./api.js";
+import { toggleTheme } from "./theme.js";
 
 export const AuthContext = createContext({ user: null, signOut: () => {} });
+
+/** Light / dark. The choice is kept on this browser. */
+export function ThemeSwitch() {
+  const [dark, setDark] = useState(() => document.documentElement.dataset.theme === "dark");
+  return (
+    <button
+      type="button"
+      className={`theme-switch${dark ? " on" : ""}`}
+      role="switch"
+      aria-checked={dark}
+      aria-label={dark ? "Switch to light mode" : "Switch to dark mode"}
+      title={dark ? "Light mode" : "Dark mode"}
+      onClick={() => setDark(toggleTheme() === "dark")}
+    >
+      <span />
+    </button>
+  );
+}
 
 /** Signed-in user's name and the sign-out button, for the top bars. */
 export function UserMenu() {
@@ -9,15 +28,19 @@ export function UserMenu() {
   if (!user) return null;
   if (user.authDisabled)
     return (
-      <span
-        className="auth-off"
-        title="The server runs with STUDIO_AUTH=0: no sign-in, anyone who can open it can edit"
-      >
-        Sign-in off
+      <span className="user-menu">
+        <span
+          className="auth-off"
+          title="The server runs with STUDIO_AUTH=0: no sign-in, anyone who can open it can edit"
+        >
+          Sign-in off
+        </span>
+        <ThemeSwitch />
       </span>
     );
   return (
     <span className="user-menu">
+      <ThemeSwitch />
       <span className="muted">{user.username}</span>
       <button className="small" onClick={signOut}>
         Sign out
@@ -54,6 +77,7 @@ export function Login({ onSignedIn }) {
 
   return (
     <main className="login-page">
+      <ThemeSwitch />
       <form className="login-card" onSubmit={submit}>
         <h1>Playable Studio</h1>
         <label>
