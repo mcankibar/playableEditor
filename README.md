@@ -173,7 +173,7 @@ değerleriyle başlar, tarayıcının yenilemede geri yüklediği eski bir `wind
 
 ## Henüz yok
 
-Rol/yetki ayrımı, varyant kartlarında önizleme görüntüsü, önizlemenin ayrı bir origin'de izole çalışması
+Rol/yetki ayrımı, önizlemenin ayrı bir origin'de izole çalışması
 (şu an release'in kodu Studio ile aynı origin'de çalışır, yani önizleyen kişinin oturumuyla API'ye
 istek atabilir; release'leri ekipteki geliştiriciler yüklediği için kabul edilebilir).
 

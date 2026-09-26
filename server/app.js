@@ -438,14 +438,15 @@ export async function buildApp({
     const { name, copyFrom, tags, status } = req.body ?? {};
     let overrides = {};
     let copied = {};
+    let source = null;
     if (copyFrom !== undefined) {
-      const source = variant(copyFrom);
+      source = variant(copyFrom);
       if (source.gameId !== gameId) throw badRequest("copyFrom belongs to another game");
       overrides = source.overrides;
       copied = { tags: source.tags, baseReleaseId: source.baseReleaseId, pinnedReleaseId: source.pinnedReleaseId };
     }
     reply.status(201);
-    return db.createVariant(gameId, variantName(name), overrides, {
+    const created = db.createVariant(gameId, variantName(name), overrides, {
       user: who(req),
       baseReleaseId: copied.baseReleaseId,
       pinnedReleaseId: copied.pinnedReleaseId,
@@ -453,6 +454,8 @@ export async function buildApp({
       status: status === undefined ? "draft" : statusBody(status),
       kind: copyFrom === undefined ? "create" : "copy"
     });
+    if (copyFrom !== undefined && store.copyThumb(source.id, created.id)) db.setThumbnail(created.id);
+    return db.getVariant(created.id);
   });
 
   // Body: a variant file as written by the template's dev panel / used by `npm run export`.
@@ -583,6 +586,33 @@ export async function buildApp({
     const v = db.listVariants(id, true).find((v) => v.id === Number(req.params.id) && v.deletedAt);
     if (!v) throw notFound("Deleted variant");
     return db.restoreDeletedVariant(v.id, id);
+  });
+
+  const THUMB_MAX = 150_000;
+
+  function thumbnailBytes(body) {
+    const jpeg = body?.jpeg;
+    if (typeof jpeg !== "string" || !jpeg) throw badRequest("Send a JPEG as base64");
+    const bytes = Buffer.from(jpeg, "base64");
+    if (bytes.length < 32 || bytes.length > THUMB_MAX) throw badRequest("Thumbnail must be a JPEG under 150 KB");
+    if (bytes[0] !== 0xff || bytes[1] !== 0xd8 || bytes[2] !== 0xff) throw badRequest("Thumbnail must be a JPEG");
+    return bytes;
+  }
+
+  app.put("/api/variants/:id/thumbnail", async (req) => {
+    const v = variant(req.params.id);
+    store.writeThumb(v.id, thumbnailBytes(req.body));
+    const thumbAt = db.setThumbnail(v.id);
+    if (!thumbAt) throw notFound("Variant");
+    return { id: v.id, thumbAt };
+  });
+
+  app.get("/api/variants/:id/thumbnail", async (req, reply) => {
+    const v = variant(req.params.id);
+    const file = store.readThumb(v.id);
+    if (!file) throw notFound("Thumbnail");
+    reply.header("Cache-Control", "private, max-age=86400").type("image/jpeg");
+    return file;
   });
 
   app.delete("/api/variants/:id", async (req, reply) => {

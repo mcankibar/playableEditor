@@ -172,6 +172,37 @@ test("variants: create, copy, rename, edit overrides, delete", () =>
     assert.equal((await app.inject({ method: "PUT", url: "/api/variants/999", payload: {} })).statusCode, 404);
   }));
 
+test("a variant picture is stored, shown back and copied with the variant", () =>
+  withApp(async (app) => {
+    await upload(app, releaseHtml());
+    const [def] = json(await app.inject("/api/games/test-game")).variants;
+    const jpeg = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff]), Buffer.alloc(40, 7)]).toString("base64");
+    assert.equal((await app.inject({ method: "GET", url: `/api/variants/${def.id}/thumbnail` })).statusCode, 404);
+    const saved = json(
+      await app.inject({ method: "PUT", url: `/api/variants/${def.id}/thumbnail`, payload: { jpeg } })
+    );
+    assert.ok(saved.thumbAt);
+    assert.equal(json(await app.inject("/api/games/test-game")).variants[0].thumbAt, saved.thumbAt);
+    const file = await app.inject({ method: "GET", url: `/api/variants/${def.id}/thumbnail` });
+    assert.equal(file.headers["content-type"], "image/jpeg");
+    assert.equal(file.rawPayload[0], 0xff);
+    assert.equal(
+      (await app.inject({ method: "PUT", url: `/api/variants/${def.id}/thumbnail`, payload: { jpeg: "aGVsbG8=" } }))
+        .statusCode,
+      400
+    );
+    const copy = json(
+      await app.inject({
+        method: "POST",
+        url: "/api/games/test-game/variants",
+        payload: { name: "With picture", copyFrom: def.id }
+      })
+    );
+    assert.ok(copy.thumbAt);
+    const copied = await app.inject({ method: "GET", url: `/api/variants/${copy.id}/thumbnail` });
+    assert.equal(copied.rawPayload.length, file.rawPayload.length);
+  }));
+
 test("uploads are content-addressed, typed from their bytes and served back", () =>
   withApp(async (app) => {
     const res = await app.inject({ method: "POST", url: "/api/assets", payload: { name: "logo.jpg", base64: PNG2 } });

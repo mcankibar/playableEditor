@@ -1,5 +1,5 @@
-// Files on disk: data/releases/<id>.html, data/assets/<sha256> (content-addressed) and
-// data/tmp/ (finished export jobs, removed after a day).
+// Files on disk: data/releases/<id>.html, data/assets/<sha256> (content-addressed),
+// data/thumbs/<variantId>.jpg and data/tmp/ (finished export jobs, removed after a day).
 import fs from "node:fs";
 import path from "node:path";
 import { prepareRelease } from "../shared/playable/export/patch.js";
@@ -10,8 +10,10 @@ export function openStore(dataDir) {
   const tmpDir = path.join(dataDir, "tmp");
   const exportsDir = path.join(dataDir, "exports");
   const jobsDir = path.join(dataDir, "jobs");
+  const thumbsDir = path.join(dataDir, "thumbs");
   fs.mkdirSync(exportsDir, { recursive: true });
   fs.mkdirSync(jobsDir, { recursive: true });
+  fs.mkdirSync(thumbsDir, { recursive: true });
   // Also creates dataDir itself, where the database lives.
   fs.mkdirSync(releasesDir, { recursive: true });
   fs.mkdirSync(assetsDir, { recursive: true });
@@ -29,6 +31,28 @@ export function openStore(dataDir) {
     tmpDir,
     exportsDir,
     jobsDir,
+    thumbsDir,
+    thumbFile(id) {
+      const n = Number(id);
+      if (!Number.isInteger(n) || n < 1) throw new Error("Invalid variant id");
+      return path.join(thumbsDir, `${n}.jpg`);
+    },
+    writeThumb(id, bytes) {
+      const file = this.thumbFile(id);
+      fs.writeFileSync(file + ".part", bytes);
+      fs.renameSync(file + ".part", file);
+    },
+    readThumb(id) {
+      const file = this.thumbFile(id);
+      return fs.existsSync(file) ? fs.readFileSync(file) : null;
+    },
+    /** Copies a variant's picture onto another variant. Returns whether there was one. */
+    copyThumb(fromId, toId) {
+      const from = this.thumbFile(fromId);
+      if (!fs.existsSync(from)) return false;
+      fs.copyFileSync(from, this.thumbFile(toId));
+      return true;
+    },
     releaseFile,
     exportFile(hash) {
       if (!/^[a-f0-9]{64}$/.test(hash)) throw new Error("Invalid export hash");

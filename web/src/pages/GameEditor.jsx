@@ -36,6 +36,7 @@ export function GameEditor({ gameId, variantId }) {
   const [dialog, setDialog] = useState(null); // { type: "export" | "releases" | "playtest", ... }
   const [drawer, setDrawer] = useState(null); // "history" | "exports"
   const [error, setError] = useState("");
+  const thumbSent = useRef("");
 
   const load = useCallback(
     () =>
@@ -78,6 +79,27 @@ export function GameEditor({ gameId, variantId }) {
   );
   const sync = useVariantSync({ variant, releaseId, onSaved: replaceVariant, onError: setError });
   const overrides = sync.overrides;
+
+  useEffect(() => {
+    thumbSent.current = "";
+  }, [variant?.id]);
+
+  const onThumbnail = useCallback(
+    (dataUrl) => {
+      if (!variant || dataUrl === thumbSent.current) return;
+      thumbSent.current = dataUrl;
+      const id = variant.id;
+      api.saveThumbnail(id, dataUrl).then(
+        ({ thumbAt }) =>
+          setData((d) => d && { ...d, variants: d.variants.map((v) => (v.id === id ? { ...v, thumbAt } : v)) }),
+        (e) => {
+          thumbSent.current = "";
+          setError(e.message);
+        }
+      );
+    },
+    [variant]
+  );
 
   useEffect(() => {
     if (!variant) return;
@@ -347,6 +369,7 @@ export function GameEditor({ gameId, variantId }) {
             release={release}
             highlight={outline ?? selection?.componentId ?? null}
             onSelectComponent={setSelection}
+            onThumbnail={onThumbnail}
           />
         ) : (
           <section className="preview" />

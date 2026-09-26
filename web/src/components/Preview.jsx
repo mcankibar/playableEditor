@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { releasePlayUrl } from "../api.js";
+import { captureGameFrame } from "../captureFrame.js";
 
 // CSS viewport sizes (portrait) — what the playable sees as window.innerWidth/innerHeight.
 // cutout: what covers the screen on the real device (Dynamic Island / punch-hole camera).
@@ -103,7 +104,8 @@ export function Preview({
   highlight = null,
   onSelectComponent,
   comparisonView = null,
-  restartKey = 0
+  restartKey = 0,
+  onThumbnail = null
 }) {
   const [view, setView] = useState(() => {
     const saved = stored("pl-device", {});
@@ -211,6 +213,23 @@ export function Preview({
     const t = setTimeout(send, SEND_DELAY);
     return () => clearTimeout(t);
   }, [signature, ready]);
+
+  // After the preview has settled, store a picture for the variant card.
+  const shot = useRef(onThumbnail);
+  shot.current = onThumbnail;
+  useEffect(() => {
+    if (!ready || comparisonView || !shot.current) return;
+    let alive = true;
+    const t = setTimeout(() => {
+      captureGameFrame(frame.current).then((url) => {
+        if (alive && url) shot.current?.(url);
+      });
+    }, 900);
+    return () => {
+      alive = false;
+      clearTimeout(t);
+    };
+  }, [ready, signature, run, comparisonView]);
 
   useLayoutEffect(() => {
     const el = stage.current;

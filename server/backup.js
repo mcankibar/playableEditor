@@ -4,6 +4,7 @@
 //   <backupDir>/db/studio-2026-09-25.db     one per day, the last `keep` are kept
 //   <backupDir>/releases/<id>.html
 //   <backupDir>/assets/<sha256>
+//   <backupDir>/thumbs/<variantId>.jpg
 //
 // Restore: stop the Studio, copy db/studio-<day>.db to <data>/studio.db and the releases/ and
 // assets/ folders into <data>/, start it again. Point STUDIO_BACKUP_DIR at another disk (or a
@@ -54,9 +55,10 @@ export function runBackup({ db, store, backupDir, keep = 14 }) {
   const releases = copyNew(store.releasesDir, path.join(backupDir, "releases"));
   const assets = copyNew(store.assetsDir, path.join(backupDir, "assets"));
   const exports = copyNew(store.exportsDir, path.join(backupDir, "exports"));
+  const thumbs = store.thumbsDir ? copyNew(store.thumbsDir, path.join(backupDir, "thumbs")) : 0;
   fs.renameSync(part, file); // Publish the snapshot only after all referenced immutable files exist.
   for (const old of listBackups(backupDir).slice(keep)) fs.rmSync(path.join(dbDir, old.file), { force: true });
-  return { file, releases, assets, exports };
+  return { file, releases, assets, exports, thumbs };
 }
 
 /** Backs up now if the last backup is older than a day, then checks every hour. */

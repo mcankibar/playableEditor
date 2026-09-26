@@ -120,7 +120,8 @@ const MIGRATIONS = [
   ["variants", "playtest", "TEXT"],
   ["variants", "approval", "TEXT"],
   ["variants", "deleted_at", "TEXT"],
-  ["variants", "recipe_origin", "TEXT"]
+  ["variants", "recipe_origin", "TEXT"],
+  ["variants", "thumb_at", "TEXT"]
 ];
 
 export const VARIANT_STATUSES = ["draft", "review", "approved", "live"];
@@ -151,6 +152,7 @@ const variantRow = (row) =>
     pinnedReleaseId: row.pinned_release_id,
     approval: row.approval ? JSON.parse(row.approval) : null,
     playtest: row.playtest ? JSON.parse(row.playtest) : null,
+    thumbAt: row.thumb_at ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at
   };
@@ -537,6 +539,13 @@ export function openDb(file) {
     setPlaytest(id, result) {
       db.prepare("UPDATE variants SET playtest = ? WHERE id = ?").run(result ? JSON.stringify(result) : null, id);
       return this.getVariant(id);
+    },
+
+    /** Picture on the variant card. Does not change the revision — it is not an edit. */
+    setThumbnail(id) {
+      const at = now();
+      const changed = db.prepare("UPDATE variants SET thumb_at = ? WHERE id = ? AND deleted_at IS NULL").run(at, id);
+      return changed.changes > 0 ? at : null;
     },
 
     deleteVariant(id) {

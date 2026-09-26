@@ -2,6 +2,20 @@ import { useEffect, useMemo, useState } from "react";
 import { api } from "../api.js";
 import { STATUSES, download, formatDate } from "../format.js";
 
+function VariantThumb({ id, at }) {
+  const [failed, setFailed] = useState(false);
+  useEffect(() => setFailed(false), [id, at]);
+  if (!at || failed) return null;
+  return (
+    <img
+      className="variant-thumb"
+      src={`/api/variants/${id}/thumbnail?v=${encodeURIComponent(at)}`}
+      alt=""
+      onError={() => setFailed(true)}
+    />
+  );
+}
+
 const statusLabel = (id) => STATUSES.find((s) => s.id === id)?.label ?? id;
 
 /**
@@ -224,6 +238,7 @@ export function VariantList({
                 className={`variant${v.id === selectedId ? " active" : ""}`}
                 onClick={act(async () => v.id !== selectedId && onSelect(v.id))}
               >
+                <VariantThumb id={v.id} at={v.thumbAt} />
                 <span className="variant-name">
                   {v.name}
                   <span className={`status status-${v.status}`}>{statusLabel(v.status)}</span>

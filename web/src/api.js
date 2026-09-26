@@ -48,6 +48,8 @@ export const api = {
   trash: (gameId) => request("GET", `/api/games/${enc(gameId)}/trash`),
   restoreDeleted: (gameId, id) => request("POST", `/api/games/${enc(gameId)}/trash/${id}/restore`),
   deleteVariant: (id) => request("DELETE", `/api/variants/${id}`),
+  saveThumbnail: (id, dataUrl) =>
+    request("PUT", `/api/variants/${id}/thumbnail`, { jpeg: String(dataUrl).replace(/^data:image\/jpeg;base64,/, "") }),
   variantUploads: (id) => request("GET", `/api/variants/${id}/uploads`),
   revisions: (id) => request("GET", `/api/variants/${id}/revisions`),
   revision: (id, revision) => request("GET", `/api/variants/${id}/revisions/${revision}`),
