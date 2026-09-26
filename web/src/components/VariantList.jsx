@@ -18,6 +18,55 @@ function VariantThumb({ id, at }) {
 
 const statusLabel = (id) => STATUSES.find((s) => s.id === id)?.label ?? id;
 
+function Icon({ name }) {
+  const props = {
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: 2,
+    strokeLinecap: "round",
+    strokeLinejoin: "round",
+    "aria-hidden": true
+  };
+  if (name === "copy")
+    return (
+      <svg {...props}>
+        <rect x="9" y="9" width="11" height="11" rx="2" />
+        <path d="M5 15V5a2 2 0 0 1 2-2h10" />
+      </svg>
+    );
+  if (name === "edit")
+    return (
+      <svg {...props}>
+        <path d="M12 20h9" />
+        <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4Z" />
+      </svg>
+    );
+  if (name === "trash")
+    return (
+      <svg {...props}>
+        <path d="M4 7h16" />
+        <path d="M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
+        <path d="M6 7l1 13a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-13" />
+      </svg>
+    );
+  if (name === "download")
+    return (
+      <svg {...props}>
+        <path d="M12 4v11" />
+        <path d="m7 11 5 5 5-5" />
+        <path d="M5 20h14" />
+      </svg>
+    );
+  return (
+    <svg {...props}>
+      <path d="M12 16V5" />
+      <path d="m7 9 5-5 5 5" />
+      <path d="M5 20h14" />
+    </svg>
+  );
+}
+
 /**
  * The game's variants: search, status and tag filters, and a selection for bulk actions (export,
  * playtest, status, tags). Clicking a name opens the variant; the checkbox selects it.
@@ -44,7 +93,6 @@ export function VariantList({
   const [tag, setTag] = useState("");
   const [checked, setChecked] = useState(() => new Set());
   const [form, setForm] = useState(null); // { mode: "new" | "copy" | "edit", variant? }
-  const selected = variants.find((v) => v.id === selectedId);
 
   const allTags = useMemo(() => [...new Set(variants.flatMap((v) => v.tags))].sort(), [variants]);
   const releaseNumber = (id) => releases.find((r) => r.id === id)?.number;
@@ -79,10 +127,10 @@ export function VariantList({
       }
     };
 
-  const remove = act(async () => {
-    if (!window.confirm(`Move "${selected.name}" to Trash? Its history will be preserved.`)) return;
-    await api.deleteVariant(selected.id);
-    onChanged(variants.find((v) => v.id !== selected.id).id);
+  const remove = act(async (v) => {
+    if (!window.confirm(`Move "${v.name}" to Trash? Its history will be preserved.`)) return;
+    await api.deleteVariant(v.id);
+    onChanged(v.id === selectedId ? variants.find((x) => x.id !== v.id)?.id : undefined);
   });
 
   const importFile = async (file) => {
@@ -95,17 +143,20 @@ export function VariantList({
   };
 
   // Same format as the template's dev panel: usable with `npm run export -- --variant=file.json`.
-  const exportJson = () => {
+  const exportJson = act(async (v) => {
+    const values = v.id === selectedId ? overrides : v.overrides;
+    const files = v.id === selectedId ? uploads : await api.variantUploads(v.id);
     const used = {};
-    Object.values(overrides).forEach((v) => {
-      if (typeof v === "string" && uploads[v]) used[v] = uploads[v];
+    Object.values(values).forEach((value) => {
+      if (typeof value === "string" && files[value]) used[value] = files[value];
     });
-    const file = { name: selected.name, tags: selected.tags, overrides, uploads: used };
     download(
-      `${selected.name.replace(/[^a-zA-Z0-9._-]+/g, "-")}.json`,
-      new Blob([JSON.stringify(file, null, 2)], { type: "application/json" })
+      `${v.name.replace(/[^a-zA-Z0-9._-]+/g, "-")}.json`,
+      new Blob([JSON.stringify({ name: v.name, tags: v.tags, overrides: values, uploads: used }, null, 2)], {
+        type: "application/json"
+      })
     );
-  };
+  });
 
   const bulk = [...checked];
   const bulkPatch = act(async (patchOf) => {
@@ -127,6 +178,28 @@ export function VariantList({
         <span>Variants</span>
         <span className="muted small">{variants.length}</span>
         <span className="spacer" />
+        <button
+          type="button"
+          className="icon-btn"
+          title="Trash"
+          aria-label="Trash"
+          onClick={() => api.trash(gameId).then(setTrash, (e) => onError(e.message))}
+        >
+          <Icon name="trash" />
+        </button>
+        <label className="icon-btn" title="Import a variant.json" aria-label="Import">
+          <Icon name="import" />
+          <input
+            type="file"
+            accept=".json,application/json"
+            hidden
+            onChange={(e) => {
+              const file = e.target.files[0];
+              e.target.value = "";
+              if (file) importFile(file);
+            }}
+          />
+        </label>
         <button className="small" onClick={() => setForm({ mode: "new" })}>
           + New
         </button>
@@ -239,35 +312,78 @@ export function VariantList({
                 onClick={act(async () => v.id !== selectedId && onSelect(v.id))}
               >
                 <VariantThumb id={v.id} at={v.thumbAt} />
-                <span className="variant-name">
-                  {v.name}
+                <span className="variant-main">
+                <span className="variant-title">
+                  <span className="variant-name">{v.name}</span>
                   <span className={`status status-${v.status}`}>{statusLabel(v.status)}</span>
                 </span>
-                {v.tags.length > 0 && <span className="tags">{v.tags.map((t) => `#${t}`).join(" ")}</span>}
-                <span className="muted small">
-                  {count ? `${count} ${count === 1 ? "change" : "changes"}` : "Default"} ·{" "}
-                  {v.updatedBy ? `${v.updatedBy}, ` : ""}
-                  {formatDate(v.updatedAt)}
-                </span>
-                <span className="variant-flags small">
-                  {v.pinnedReleaseId && <span title="Pinned release">📌 r{releaseNumber(v.pinnedReleaseId)}</span>}
-                  {needsCheck(v) && (
-                    <span className="warn" title={`Last checked on r${releaseNumber(v.baseReleaseId)}`}>
-                      New release — check
-                    </span>
-                  )}
-                  {pt?.winRate !== undefined && (
-                    <span title={`${pt.runs} bot games on r${releaseNumber(pt.releaseId) ?? "?"}, rev ${pt.revision}`}>
-                      🤖 {pt.label} · {pt.winRate}% wins
-                    </span>
-                  )}
-                  {pt?.check === "error" && (
-                    <span className="bad" title={pt.error}>
-                      ✗ Error in check
-                    </span>
-                  )}
+                  {v.tags.length > 0 && <span className="tags">{v.tags.map((t) => `#${t}`).join(" ")}</span>}
+                  <span className="muted small">
+                    {count ? `${count} ${count === 1 ? "change" : "changes"}` : "Default"} ·{" "}
+                    {v.updatedBy ? `${v.updatedBy}, ` : ""}
+                    {formatDate(v.updatedAt)}
+                  </span>
+                  <span className="variant-flags small">
+                    {v.pinnedReleaseId && <span title="Pinned release">📌 r{releaseNumber(v.pinnedReleaseId)}</span>}
+                    {needsCheck(v) && (
+                      <span className="warn" title={`Last checked on r${releaseNumber(v.baseReleaseId)}`}>
+                        New release — check
+                      </span>
+                    )}
+                    {pt?.winRate !== undefined && (
+                      <span
+                        title={`${pt.runs} bot games on r${releaseNumber(pt.releaseId) ?? "?"}, rev ${pt.revision}`}
+                      >
+                        🤖 {pt.label} · {pt.winRate}% wins
+                      </span>
+                    )}
+                    {pt?.check === "error" && (
+                      <span className="bad" title={pt.error}>
+                        ✗ Error in check
+                      </span>
+                    )}
+                  </span>
                 </span>
               </button>
+              <span className="variant-icons">
+                <button
+                  type="button"
+                  className="icon-btn"
+                  title="Duplicate"
+                  aria-label={`Duplicate ${v.name}`}
+                  onClick={() => setForm({ mode: "copy", variant: v })}
+                >
+                  <Icon name="copy" />
+                </button>
+                <button
+                  type="button"
+                  className="icon-btn"
+                  title="Edit details"
+                  aria-label={`Edit ${v.name}`}
+                  onClick={() => setForm({ mode: "edit", variant: v })}
+                >
+                  <Icon name="edit" />
+                </button>
+                <button
+                  type="button"
+                  className="icon-btn"
+                  title="Download JSON"
+                  aria-label={`Download ${v.name}`}
+                  onClick={() => exportJson(v)}
+                >
+                  <Icon name="download" />
+                </button>
+                <button
+                  type="button"
+                  className="icon-btn danger"
+                  title="Delete"
+                  aria-label={`Delete ${v.name}`}
+                  disabled={variants.length < 2}
+                  onClick={() => remove(v)}
+                >
+                  <Icon name="trash" />
+                </button>
+              </span>
             </li>
           );
         })}
@@ -298,37 +414,6 @@ export function VariantList({
           ))}
         </div>
       )}
-      <div className="variant-actions">
-        <button className="small" onClick={() => api.trash(gameId).then(setTrash, (e) => onError(e.message))}>
-          Trash
-        </button>
-        <button className="small" onClick={() => setForm({ mode: "copy", variant: selected })}>
-          Duplicate
-        </button>
-        <button className="small" onClick={() => setForm({ mode: "edit", variant: selected })}>
-          Edit details
-        </button>
-        <button className="small danger" onClick={remove} disabled={variants.length < 2}>
-          Delete
-        </button>
-        <label className="button small" title="A variant.json downloaded from the template's dev panel">
-          Import
-          <input
-            type="file"
-            accept=".json,application/json"
-            hidden
-            onChange={(e) => {
-              const file = e.target.files[0];
-              e.target.value = "";
-              if (file) importFile(file);
-            }}
-          />
-        </label>
-        <button className="small" onClick={exportJson} title="Works with npm run export -- --variant=…">
-          Download JSON
-        </button>
-      </div>
-
       {form && (
         <VariantForm
           form={form}

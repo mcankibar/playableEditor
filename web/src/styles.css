@@ -404,33 +404,83 @@ label.inline {
   flex: 1;
 }
 .variant {
-  width: 100%;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 0;
+  width: auto;
+  flex: 1;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
   border: 0;
-  padding: 7px 8px;
+  padding: 6px 4px;
   background: none;
   text-align: left;
+  min-width: 0;
 }
-.variant:hover {
-  background: var(--panel-2);
+.variant-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+  gap: 1px;
 }
-.variant.active {
-  background: var(--accent-soft);
+.variant-title {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
 }
 .variant-name {
   font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 100%;
+  white-space: nowrap;
+  min-width: 0;
 }
-.variant-actions {
+.variant-main .muted,
+.variant-main .tags,
+.variant-main .variant-flags {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.variant-icons {
   display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  padding: 10px;
-  border-top: 1px solid var(--line);
+  flex-direction: column;
+  flex: none;
+  align-self: center;
+}
+.icon-btn {
+  width: 26px;
+  height: 26px;
+  padding: 4px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  border-radius: 4px;
+  justify-content: center;
+}
+label.icon-btn {
+  display: inline-flex;
+  cursor: pointer;
+}
+.icon-btn svg {
+  width: 16px;
+  height: 16px;
+  display: block;
+}
+.icon-btn:hover:not(:disabled) {
+  background: var(--panel-2);
+  color: var(--text);
+  border-color: transparent;
+}
+.icon-btn.danger:hover:not(:disabled) {
+  color: var(--danger);
+}
+.variants ul li:hover {
+  background: var(--panel-2);
+}
+.variants ul li.active,
+.variants ul li.active:hover {
+  background: var(--accent-soft);
 }
 
 .preview {
@@ -1174,7 +1224,8 @@ label.stack select {
   color: var(--accent-strong);
 }
 .status {
-  margin-left: 6px;
+  flex: none;
+  margin-left: 0;
   font-size: 10px;
   font-weight: 600;
   padding: 0 6px;
@@ -1197,25 +1248,23 @@ label.stack select {
 }
 .variants ul li {
   display: flex;
-  align-items: flex-start;
-  gap: 4px;
-  padding-left: 6px;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 4px 2px 6px;
+  border-radius: 6px;
 }
 .variants ul li > input[type="checkbox"] {
-  margin-top: 10px;
-}
-.variants ul li > .variant {
-  flex: 1;
-  min-width: 0;
+  margin: 0;
+  flex: none;
 }
 .variant-thumb {
-  width: 100%;
-  height: 132px;
+  width: 72px;
+  height: 96px;
+  flex: none;
   object-fit: cover;
   object-position: center;
   border-radius: 4px;
   background: #000;
-  margin-bottom: 6px;
 }
 .tags {
   font-size: 11px;
