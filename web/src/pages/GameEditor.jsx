@@ -19,6 +19,18 @@ import { Playtest } from "../components/Playtest.jsx";
 import { collectLanguages, sanitizeOverrides } from "../../../shared/playable/kit/resolve.js";
 import { formatDate } from "../format.js";
 
+const PANE_KEY = "pl-panes";
+const clamp = (n, min, max) => Math.min(max, Math.max(min, Math.round(n)));
+
+function readPanes() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(PANE_KEY));
+    return { left: clamp(saved?.left ?? 220, 180, 560), right: clamp(saved?.right ?? 380, 280, 760) };
+  } catch {
+    return { left: 220, right: 380 };
+  }
+}
+
 // Other people's edits show up within this time.
 const POLL_MS = 8000;
 
@@ -35,6 +47,7 @@ export function GameEditor({ gameId, variantId }) {
   const [outline, setOutline] = useState(null);
   const [dialog, setDialog] = useState(null); // { type: "export" | "releases" | "playtest", ... }
   const [drawer, setDrawer] = useState(null); // "history" | "exports"
+  const [panes, setPanes] = useState(readPanes);
   const [error, setError] = useState("");
   const thumbSent = useRef("");
 
@@ -79,6 +92,12 @@ export function GameEditor({ gameId, variantId }) {
   );
   const sync = useVariantSync({ variant, releaseId, onSaved: replaceVariant, onError: setError });
   const overrides = sync.overrides;
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(PANE_KEY, JSON.stringify(panes));
+    } catch {}
+  }, [panes]);
 
   useEffect(() => {
     thumbSent.current = "";
@@ -336,26 +355,39 @@ export function GameEditor({ gameId, variantId }) {
         }
       />
 
-      <div className="editor-body">
-        <VariantList
-          gameId={gameId}
-          variants={data.variants}
-          releases={data.releases}
-          selectedId={variant.id}
-          overrides={overrides}
-          uploads={uploads}
-          latestReleaseId={latest?.id}
-          onCompare={openCompare}
-          onSelect={(id) => navigate(gameHash(gameId, id))}
-          onChanged={async (selectId) => {
-            await load();
-            if (selectId) navigate(gameHash(gameId, selectId));
-          }}
-          onError={setError}
-          beforeChange={() => sync.flush()}
-          onExport={(ids) => setDialog({ type: "export", variantIds: ids })}
-          onPlaytest={(ids) => openPlaytest(data.variants.filter((v) => ids.includes(v.id)))}
-        />
+      <div className="editor-body" style={{ gridTemplateColumns: `${panes.left}px minmax(0, 1fr) ${panes.right}px` }}>
+        <div className="pane-slot">
+          <VariantList
+            gameId={gameId}
+            variants={data.variants}
+            releases={data.releases}
+            selectedId={variant.id}
+            overrides={overrides}
+            uploads={uploads}
+            latestReleaseId={latest?.id}
+            onCompare={openCompare}
+            onSelect={(id) => navigate(gameHash(gameId, id))}
+            onChanged={async (selectId) => {
+              await load();
+              if (selectId) navigate(gameHash(gameId, selectId));
+            }}
+            onError={setError}
+            beforeChange={() => sync.flush()}
+            onExport={(ids) => setDialog({ type: "export", variantIds: ids })}
+            onPlaytest={(ids) => openPlaytest(data.variants.filter((v) => ids.includes(v.id)))}
+          />
+          <PaneResizer
+            edge="right"
+            label="Resize variants"
+            onStart={() => panes}
+            onDrag={(start, dx, total) =>
+              setPanes({
+                ...start,
+                left: clamp(start.left + dx, 180, Math.min(560, total - start.right - 260))
+              })
+            }
+          />
+        </div>
 
         {manifest && loadedVariant === variant.id ? (
           <Preview
@@ -375,41 +407,54 @@ export function GameEditor({ gameId, variantId }) {
           <section className="preview" />
         )}
 
-        {drawer === "history" ? (
-          <HistoryPanel
-            variant={variant}
-            fields={fields}
-            onRestore={async (revision) => {
-              await sync.flush();
-              const saved = await api.restore(variant.id, revision, sync.revision);
-              replaceVariant(saved);
-              sync.applyRemote(saved);
-            }}
-            onError={setError}
-            onClose={() => setDrawer(null)}
+        <div className="pane-slot">
+          <PaneResizer
+            edge="left"
+            label="Resize fields"
+            onStart={() => panes}
+            onDrag={(start, dx, total) =>
+              setPanes({
+                ...start,
+                right: clamp(start.right - dx, 280, Math.min(760, total - start.left - 260))
+              })
+            }
           />
-        ) : drawer === "exports" ? (
-          <ExportsPanel gameId={gameId} onError={setError} onClose={() => setDrawer(null)} />
-        ) : manifest ? (
-          <FieldPanel
-            gameId={gameId}
-            fields={fields}
-            overrides={overrides}
-            check={check}
-            releaseId={releaseId}
-            uploads={uploads}
-            languages={languages}
-            onAddLanguage={(lang) => setExtraLangs((l) => [...l, lang])}
-            onChange={sync.change}
-            onUploaded={(id, dataUri) => setUploads((u) => ({ ...u, [id]: dataUri }))}
-            onError={setError}
-            selection={selection}
-            onClearFocus={() => setSelection(null)}
-            onHoverComponent={setOutline}
-          />
-        ) : (
-          <aside className="fields center muted">Loading fields…</aside>
-        )}
+          {drawer === "history" ? (
+            <HistoryPanel
+              variant={variant}
+              fields={fields}
+              onRestore={async (revision) => {
+                await sync.flush();
+                const saved = await api.restore(variant.id, revision, sync.revision);
+                replaceVariant(saved);
+                sync.applyRemote(saved);
+              }}
+              onError={setError}
+              onClose={() => setDrawer(null)}
+            />
+          ) : drawer === "exports" ? (
+            <ExportsPanel gameId={gameId} onError={setError} onClose={() => setDrawer(null)} />
+          ) : manifest ? (
+            <FieldPanel
+              gameId={gameId}
+              fields={fields}
+              overrides={overrides}
+              check={check}
+              releaseId={releaseId}
+              uploads={uploads}
+              languages={languages}
+              onAddLanguage={(lang) => setExtraLangs((l) => [...l, lang])}
+              onChange={sync.change}
+              onUploaded={(id, dataUri) => setUploads((u) => ({ ...u, [id]: dataUri }))}
+              onError={setError}
+              selection={selection}
+              onClearFocus={() => setSelection(null)}
+              onHoverComponent={setOutline}
+            />
+          ) : (
+            <aside className="fields center muted">Loading fields…</aside>
+          )}
+        </div>
       </div>
 
       {dialog?.type === "compare" && (
@@ -520,6 +565,38 @@ function ReleaseBanner({ variant, latest, releases, releaseId, orphans, onPlayte
         Mark as checked
       </button>
     </div>
+  );
+}
+
+function PaneResizer({ edge, label, onStart, onDrag }) {
+  function down(e) {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    const handle = e.currentTarget;
+    handle.classList.add("dragging");
+    try {
+      handle.setPointerCapture(e.pointerId);
+    } catch {}
+    const start = onStart();
+    const startX = e.clientX;
+    const total = handle.closest(".editor-body").clientWidth;
+    const move = (ev) => onDrag(start, ev.clientX - startX, total);
+    const up = () => {
+      handle.classList.remove("dragging");
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  }
+  return (
+    <div
+      className={`pane-resizer ${edge}`}
+      role="separator"
+      aria-orientation="vertical"
+      aria-label={label}
+      onPointerDown={down}
+    />
   );
 }
 
